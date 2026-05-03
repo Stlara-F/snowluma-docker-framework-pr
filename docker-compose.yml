@@ -1,0 +1,36 @@
+services:
+  snowluma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/amd64
+    image: ${SNOWLUMA_IMAGE:-snowluma-docker-framework:latest}
+    container_name: ${SNOWLUMA_CONTAINER:-snowluma}
+    restart: unless-stopped
+    shm_size: 1gb
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      VNC_PASSWD: ${VNC_PASSWD:-vncpasswd}
+      SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
+      SNOWLUMA_GID: ${SNOWLUMA_GID:-1000}
+      SNOWLUMA_WEBUI_PORT: ${SNOWLUMA_WEBUI_PORT:-8080}
+      SNOWLUMA_LOG_LEVEL: ${SNOWLUMA_LOG_LEVEL:-info}
+    ports:
+      - "${VNC_PORT:-5900}:5900"
+      - "${NOVNC_PORT:-6081}:6081"
+      - "${SNOWLUMA_WEBUI_HOST_PORT:-8080}:${SNOWLUMA_WEBUI_PORT:-8080}"
+      - "${ONEBOT_HTTP_PORT:-3000}:3000"
+      - "${ONEBOT_WS_PORT:-3001}:3001"
+    volumes:
+      - snowluma-data:/app/snowluma-data
+      - snowluma-qq-config:/app/.config
+      - snowluma-qq-data:/app/.local/share
+
+volumes:
+  snowluma-data:
+  snowluma-qq-config:
+  snowluma-qq-data:

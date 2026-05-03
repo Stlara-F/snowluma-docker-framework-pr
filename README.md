@@ -1,0 +1,106 @@
+# SnowLuma.Docker.Framework
+
+SnowLuma 的 Linux Docker 运行框架，结构参考 `NapCat.Docker.Framework`：容器内安装 Linux QQ、Xvfb、VNC/noVNC、supervisord，并运行 SnowLuma 的 Node.js 发行产物。
+
+## 支持平台
+
+- [x] Linux/Amd64
+- [ ] Linux/Arm64（等待 SnowLuma hook native addon）
+
+## 端口
+
+- `5900`: VNC
+- `6081`: noVNC
+- `8080`: SnowLuma WebUI
+- `3000`: OneBot HTTP 默认端口
+- `3001`: OneBot WebSocket 默认端口
+
+## 本地构建
+
+在 SnowLuma 仓库根目录执行：
+
+```bash
+dev/SnowLuma.Docker.Framework/scripts/build-image.sh
+```
+
+这会先生成 `dev/SnowLuma.Docker.Framework/SnowLuma.Framework.tar.gz`，再构建 Docker 镜像 `snowluma-docker-framework:latest`。
+
+如果这个 Docker 框架作为独立仓库使用，可以指定 SnowLuma 源码目录：
+
+```bash
+SNOWLUMA_SOURCE_DIR=/path/to/SnowLuma ./scripts/build-image.sh
+```
+
+## 启动
+
+```bash
+dev/SnowLuma.Docker.Framework/scripts/run.sh
+```
+
+或使用 compose：
+
+```bash
+cd dev/SnowLuma.Docker.Framework
+./scripts/package-snowluma.sh
+docker compose up -d --build
+```
+
+## docker run 示例
+
+```bash
+docker run -d \
+  --name snowluma \
+  --restart unless-stopped \
+  --shm-size=1g \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  -e VNC_PASSWD=vncpasswd \
+  -e SNOWLUMA_WEBUI_PORT=8080 \
+  -p 5900:5900 \
+  -p 6081:6081 \
+  -p 5099:8080 \
+  -p 3000:3000 \
+  -p 3001:3001 \
+  -v snowluma-data:/app/snowluma-data \
+  -v snowluma-qq-config:/app/.config \
+  -v snowluma-qq-data:/app/.local/share \
+  snowluma-docker-framework:latest
+```
+
+## 常用命令
+
+进入容器：
+
+```bash
+docker exec -it snowluma bash
+```
+
+查看日志：
+
+```bash
+docker logs -f snowluma
+```
+
+查看 SnowLuma WebUI 临时密码：
+
+```bash
+docker logs snowluma | grep "临时密码"
+```
+
+noVNC 地址：
+
+```text
+http://IP:6081/
+```
+
+SnowLuma WebUI 地址：
+
+```text
+http://IP:5099/
+```
+
+SnowLuma 的配置和 OneBot 配置默认持久化在 `/app/snowluma-data/config`。
+
+## 注意
+
+SnowLuma 当前使用 native addon 对 QQ 进程进行加载，容器启动时需要 `SYS_PTRACE` 能力和 `seccomp=unconfined`。请遵守第三方软件的使用许可和开源协议。

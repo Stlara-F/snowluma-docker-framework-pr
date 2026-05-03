@@ -1,0 +1,88 @@
+name: docker-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      snowluma_repository:
+        description: SnowLuma source repository
+        required: true
+        default: SnowLuma/SnowLuma
+      snowluma_ref:
+        description: SnowLuma branch, tag, or commit
+        required: true
+        default: main
+      image:
+        description: Docker image name, for example docker.io/example/snowluma
+        required: true
+        default: ""
+      push:
+        description: Push image after build
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build-amd64:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Docker framework
+        uses: actions/checkout@v4
+
+      - name: Checkout SnowLuma source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.snowluma_repository }}
+          ref: ${{ inputs.snowluma_ref }}
+          path: _snowluma-source
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable pnpm
+
+      - name: Package SnowLuma framework artifact
+        env:
+          SNOWLUMA_SOURCE_DIR: ${{ github.workspace }}/_snowluma-source
+          SNOWLUMA_TARGET: linux-x64
+        run: ./scripts/package-snowluma.sh
+
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: ${{ inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        env:
+          IMAGE: ${{ inputs.image }}
+          REF: ${{ inputs.snowluma_ref }}
+          PUSH: ${{ inputs.push }}
+        run: |
+          set -eu
+          if [ -z "${IMAGE}" ]; then
+            echo "workflow input image is required"
+            exit 1
+          fi
+          TAG="$(printf '%s' "${REF}" | tr '/:@' '---')"
+          OUTPUT="--load"
+          if [ "${PUSH}" = "true" ]; then
+            OUTPUT="--push"
+          fi
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag "${IMAGE}:${TAG}" \
+            --tag "${IMAGE}:latest" \
+            --file ./Dockerfile \
+            ${OUTPUT} \
+            .
+
+      - name: Docker logout
+        if: always()
+        run: docker logout || true
