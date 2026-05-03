@@ -3,16 +3,12 @@ name: docker-publish
 on:
   workflow_dispatch:
     inputs:
-      snowluma_repository:
-        description: SnowLuma source repository
-        required: true
-        default: SnowLuma/SnowLuma
-      snowluma_ref:
-        description: SnowLuma branch, tag, or commit
-        required: true
-        default: main
       image:
         description: Docker image name, for example docker.io/example/snowluma
+        required: true
+        default: ""
+      tag:
+        description: Docker image tag
         required: true
         default: ""
       push:
@@ -28,26 +24,8 @@ jobs:
       - name: Checkout Docker framework
         uses: actions/checkout@v4
 
-      - name: Checkout SnowLuma source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.snowluma_repository }}
-          ref: ${{ inputs.snowluma_ref }}
-          path: _snowluma-source
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Enable pnpm
-        run: corepack enable pnpm
-
-      - name: Package SnowLuma framework artifact
-        env:
-          SNOWLUMA_SOURCE_DIR: ${{ github.workspace }}/_snowluma-source
-          SNOWLUMA_TARGET: linux-x64
-        run: ./scripts/package-snowluma.sh
+      - name: Verify prebuilt SnowLuma artifact
+        run: ./scripts/prepare-artifact.sh
 
       - name: Set up Docker buildx
         uses: docker/setup-buildx-action@v3
@@ -62,7 +40,7 @@ jobs:
       - name: Build image
         env:
           IMAGE: ${{ inputs.image }}
-          REF: ${{ inputs.snowluma_ref }}
+          TAG: ${{ inputs.tag }}
           PUSH: ${{ inputs.push }}
         run: |
           set -eu
@@ -70,7 +48,10 @@ jobs:
             echo "workflow input image is required"
             exit 1
           fi
-          TAG="$(printf '%s' "${REF}" | tr '/:@' '---')"
+          if [ -z "${TAG}" ]; then
+            echo "workflow input tag is required"
+            exit 1
+          fi
           OUTPUT="--load"
           if [ "${PUSH}" = "true" ]; then
             OUTPUT="--push"

@@ -7,7 +7,7 @@ FRAMEWORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 IMAGE="${IMAGE:-snowluma-docker-framework:latest}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 
-"${SCRIPT_DIR}/package-snowluma.sh"
+"${SCRIPT_DIR}/prepare-artifact.sh"
 
 docker buildx build \
   --load \
@@ -17,4 +17,3 @@ docker buildx build \
   "${FRAMEWORK_DIR}"
 
 echo "Built ${IMAGE} for ${PLATFORM}"
-
