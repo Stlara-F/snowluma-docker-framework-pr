@@ -6,7 +6,7 @@ FRAMEWORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 IMAGE="${IMAGE:-snowluma-docker-framework:latest}"
 NAME="${NAME:-snowluma}"
-SNOWLUMA_WEBUI_PORT="${SNOWLUMA_WEBUI_PORT:-8080}"
+SNOWLUMA_WEBUI_PORT="${SNOWLUMA_WEBUI_PORT:-5099}"
 SNOWLUMA_WEBUI_HOST_PORT="${SNOWLUMA_WEBUI_HOST_PORT:-5099}"
 
 if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then

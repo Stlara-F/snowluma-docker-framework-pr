@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
     SNOWLUMA_HOME=/app/snowluma \
     SNOWLUMA_DATA=/app/snowluma-data \
-    SNOWLUMA_WEBUI_PORT=8080 \
+    SNOWLUMA_WEBUI_PORT=5099 \
     SNOWLUMA_UID=1000 \
     SNOWLUMA_GID=1000 \
     SNOWLUMA_LOG_LEVEL=info \
@@ -88,7 +88,7 @@ RUN chmod +x /root/start.sh && \
 
 WORKDIR /app/snowluma-data
 
-EXPOSE 5900 6081 8080 3000 3001
+EXPOSE 5900 6081 5099 3000 3001
 
 VOLUME ["/app/snowluma-data", "/app/.config", "/app/.local/share"]
 
