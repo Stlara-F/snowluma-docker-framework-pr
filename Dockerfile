@@ -3,7 +3,7 @@
 ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim
 
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 ARG QQ_VERSION=3.2.28-48517
 ARG QQ_CHANNEL=f9cbaab2
 ARG QQ_BASE_URL=https://dldir1v6.qq.com/qqfile/qq/QQNT
@@ -63,9 +63,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     set -eux; \
-    case "${TARGETARCH}" in \
-      amd64|arm64) qq_arch="${TARGETARCH}" ;; \
-      *) echo "Unsupported Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    qq_arch="$(dpkg --print-architecture)"; \
+    case "${qq_arch}" in \
+      amd64|arm64) ;; \
+      *) echo "Unsupported Debian architecture: ${qq_arch}" >&2; exit 1 ;; \
     esac; \
     apt-get update && \
     aria2c --check-certificate=false -x16 -s16 -o /tmp/linuxqq.deb "${QQ_BASE_URL}/${QQ_CHANNEL}/linuxqq_${QQ_VERSION}_${qq_arch}.deb" && \
@@ -84,10 +85,10 @@ RUN chmod +x /root/start.sh && \
     useradd --no-log-init --uid 1001 --gid 1001 --home-dir /app --shell /bin/bash snowluma && \
     mkdir -p "${SNOWLUMA_HOME}" "${SNOWLUMA_DATA}" /app/.cache /app/.config /app/.local/share && \
     tar -xzf /tmp/SnowLuma.Framework.tar.gz -C "${SNOWLUMA_HOME}" && \
-    case "${TARGETARCH}" in \
+    case "$(dpkg --print-architecture)" in \
       amd64) native_arch="x64" ;; \
       arm64) native_arch="arm64" ;; \
-      *) echo "Unsupported Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+      *) echo "Unsupported Debian architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
     esac && \
     test -f "${SNOWLUMA_HOME}/index.mjs" && \
     test -f "${SNOWLUMA_HOME}/native/snowluma-linux-${native_arch}.node" && \
