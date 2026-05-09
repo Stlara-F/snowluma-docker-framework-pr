@@ -79,9 +79,8 @@ jobs:
       # Pull the per-arch lite tarball from SnowLuma's GitHub release.
       # `gh release download` waits for the asset to be ready, retries on
       # transient failures, and fails loudly with a precise error if the
-      # tag/asset is missing — replacing the earlier curl + standalone
-      # prepare-artifact.sh sanity check. The Dockerfile itself does the
-      # final arch-specific presence test inside the build context.
+      # tag/asset is missing. The Dockerfile itself runs the final
+      # arch-specific presence test inside the build context.
       - name: Download SnowLuma release artifact
         env:
           GH_TOKEN: ${{ github.token }}
