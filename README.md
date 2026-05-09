@@ -106,11 +106,19 @@ docker exec -it snowluma bash
 docker logs -f snowluma
 ```
 
-查看 SnowLuma WebUI 临时密码：
+快速查找 SnowLuma WebUI 临时密码：
 
 ```bash
-docker logs snowluma | grep "临时密码"
+docker logs snowluma 2>&1 | grep -E "临时密码|initial credentials" | tail -n 1
 ```
+
+只输出密码本身：
+
+```bash
+docker logs snowluma 2>&1 | sed -nE 's/.*(临时密码: |initial credentials: user=admin password=)([^[:space:]]+).*/\2/p' | tail -n 1
+```
+
+如果启动时自定义了容器名，请把命令里的 `snowluma` 替换成实际容器名。临时密码只会在全新的 `snowluma-data` 卷首次启动时输出一次；后续重启或复用旧卷时不会再生成新的明文密码。
 
 noVNC 地址：
 
