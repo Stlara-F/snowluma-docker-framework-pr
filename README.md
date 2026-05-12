@@ -134,6 +134,18 @@ http://IP:5099/
 
 SnowLuma 的配置和 OneBot 配置默认持久化在 `/app/snowluma-data/config`。
 
+## 自动注入
+
+镜像默认在 `supervisord` 启动 SnowLuma 时设置 `SNOWLUMA_HOOK_AUTOLOAD=1`，由 SnowLuma 的 `HookManager` 在发现 QQ 进程时立刻通过 native addon（ptrace + `loadModuleManual`）注入 hook，免去 WebUI 里手动点 "Load"。supervisord 在 QQ 崩溃重启后会重新触发发现事件，新 PID 也会被自动注入。
+
+需要关闭自动注入时把环境变量改为 `0`：
+
+```bash
+docker run -e SNOWLUMA_HOOK_AUTOLOAD=0 ... motricseven7/snowluma:latest
+```
+
+或在 `docker-compose.yml` 里设 `SNOWLUMA_HOOK_AUTOLOAD: 0`。也可以在持久卷 `/app/snowluma-data/config/runtime.json` 里设置 `"hookAutoLoad": false` 长期关闭；环境变量优先于 JSON 配置。
+
 ## 注意
 
 SnowLuma 当前使用 native addon 对 QQ 进程进行加载，容器启动时需要 `SYS_PTRACE` 能力和 `seccomp=unconfined`。请遵守第三方软件的使用许可和开源协议。
