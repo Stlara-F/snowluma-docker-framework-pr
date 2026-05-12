@@ -9,7 +9,7 @@ set -euo pipefail
 : "${SNOWLUMA_WEBUI_PORT:=5099}"
 : "${SNOWLUMA_LOG_LEVEL:=info}"
 : "${SNOWLUMA_SCREEN:=1920x1080x16}"
-: "${SNOWLUMA_HOOK_AUTOLOAD:=1}"
+: "${SNOWLUMA_HOOK_AUTOLOAD:=0}"
 
 export DISPLAY="${DISPLAY:-:1}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/snowluma-${SNOWLUMA_UID}}"
