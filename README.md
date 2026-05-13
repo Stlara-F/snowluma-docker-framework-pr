@@ -136,23 +136,17 @@ SnowLuma 的配置和 OneBot 配置默认持久化在 `/app/snowluma-data/config
 
 ## 自动注入
 
-镜像默认**不开启**自动注入（`SNOWLUMA_HOOK_AUTOLOAD=0`）。容器起来后请 VNC 登录 QQ，再到 SnowLuma WebUI 手动点击对应进程的 "Load" 按钮触发注入。
+镜像默认**开启**自动注入（`SNOWLUMA_HOOK_AUTOLOAD=1`）。容器一启动 SnowLuma 就把 hook 注入到 QQ 主进程，但只是被动观察；等你 VNC 进去扫码并在手机上完成登录后，hook 会自动识别真实登录状态并切到工作模式，rkeys / 好友 / 群信息会自动加载，无需在 WebUI 里手动点 Load。supervisor 把 QQ 自动重启后也是同样流程。
 
-### 为什么默认关闭
+### 关闭自动注入
 
-在 QQ 完成登录之前对其触发自动注入存在已知的时序问题：SnowLuma 可能会读取到登录尚未完成阶段产生的临时状态，把它当成已登录，然后进入"在线但所有数据请求都超时"的卡住状态，WebUI 日志里会大量出现 `failed to load rkeys/friends/groups for UIN <某个值>: send reply timed out`。等 QQ 完成登录后再手动点 Load 不会有这个问题。
-
-### 需要在容器启动时自动注入
-
-只在能确认 QQ 启动时会立刻走"自动登录"且几秒内完成的场景下显式开启，否则请保持默认关闭：
+如果你想保留旧的"手动 Load"工作流：
 
 ```bash
-docker run -e SNOWLUMA_HOOK_AUTOLOAD=1 ... motricseven7/snowluma:latest
+docker run -e SNOWLUMA_HOOK_AUTOLOAD=0 ... motricseven7/snowluma:latest
 ```
 
-或在 `docker-compose.yml` 里设 `SNOWLUMA_HOOK_AUTOLOAD: 1`。也可以在持久卷 `/app/snowluma-data/config/runtime.json` 里设置 `"hookAutoLoad": true` 长期开启；环境变量优先于 JSON 配置。
-
-如果开启后看到上面的 `send reply timed out` 警告，请关掉自动注入、重启容器，等 QQ 登录完成再手动 Load。
+或在 `docker-compose.yml` 里设 `SNOWLUMA_HOOK_AUTOLOAD: 0`，再或者在持久卷 `/app/snowluma-data/config/runtime.json` 里设 `"hookAutoLoad": false`。环境变量优先于 JSON 配置。
 
 ## 注意
 
