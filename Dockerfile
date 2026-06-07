@@ -19,6 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SNOWLUMA_LOG_LEVEL=info \
     SNOWLUMA_SCREEN=1920x1080x16 \
     SNOWLUMA_HOOK_AUTOLOAD=1 \
+    SNOWLUMA_QQ_FLAGS="--disable-gpu --disable-software-rasterizer --disable-gpu-compositing" \
     DISPLAY=:1
 
 RUN rm -f /etc/apt/apt.conf.d/docker-clean; \

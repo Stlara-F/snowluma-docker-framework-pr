@@ -148,6 +148,24 @@ docker run -e SNOWLUMA_HOOK_AUTOLOAD=0 ... motricseven7/snowluma:latest
 
 或在 `docker-compose.yml` 里设 `SNOWLUMA_HOOK_AUTOLOAD: 0`，再或者在持久卷 `/app/snowluma-data/config/runtime.json` 里设 `"hookAutoLoad": false`。环境变量优先于 JSON 配置。
 
+## GPU / 内存（SwiftShader 软件渲染泄漏）
+
+容器内没有硬件 GPU，QQ（基于 Electron）的 GPU 进程会退回 SwiftShader 软件渲染。长时间停在登录界面（未扫码登录）时，SwiftShader 会不断分配且不回收内存，导致进程内存单调上涨。镜像默认通过 `SNOWLUMA_QQ_FLAGS` 给 QQ 关掉 GPU 与 SwiftShader：
+
+```text
+SNOWLUMA_QQ_FLAGS="--disable-gpu --disable-software-rasterizer --disable-gpu-compositing"
+```
+
+此时改走纯 CPU 光栅（Skia），登录二维码照常渲染、可正常扫码，只是不再有软件 GL 那条漏内存的路径。
+
+如果你给容器做了 GPU 直通、想恢复硬件加速，把它清空或换成自己的参数：
+
+```bash
+docker run -e SNOWLUMA_QQ_FLAGS="" ... motricseven7/snowluma:latest
+```
+
+或在 `docker-compose.yml` 里设 `SNOWLUMA_QQ_FLAGS: ""`。
+
 ## 注意
 
 SnowLuma 当前使用 native addon 对 QQ 进程进行加载，容器启动时需要 `SYS_PTRACE` 能力和 `seccomp=unconfined`。请遵守第三方软件的使用许可和开源协议。
