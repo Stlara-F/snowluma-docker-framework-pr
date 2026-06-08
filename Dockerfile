@@ -37,6 +37,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       fonts-wqy-zenhei \
       git \
       gnutls-bin \
+      iproute2 \
       libasound2 \
       libatspi2.0-0 \
       libgbm1 \
