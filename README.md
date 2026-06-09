@@ -106,6 +106,12 @@ docker exec -it snowluma bash
 docker logs -f snowluma
 ```
 
+查看 supervisor 进程状态：
+
+```bash
+docker exec snowluma supervisorctl status
+```
+
 快速查找 SnowLuma WebUI 临时密码：
 
 ```bash
@@ -148,6 +154,40 @@ docker run -e SNOWLUMA_HOOK_AUTOLOAD=0 ... motricseven7/snowluma:latest
 
 或在 `docker-compose.yml` 里设 `SNOWLUMA_HOOK_AUTOLOAD: 0`，再或者在持久卷 `/app/snowluma-data/config/runtime.json` 里设 `"hookAutoLoad": false`。环境变量优先于 JSON 配置。
 
+## 多开 QQ
+
+镜像支持通过独立 `HOME` 自动拉起多个 QQ 实例。设置 `SNOWLUMA_EXTRA_QQ_HOMES` 为逗号或空格分隔的 `/app/...` 容器路径，并给每个路径挂独立持久卷：
+
+```yaml
+services:
+  snowluma:
+    environment:
+      SNOWLUMA_EXTRA_QQ_HOMES: /app/qq-acct2,/app/qq-acct3
+    volumes:
+      - snowluma-data:/app/snowluma-data
+      - snowluma-qq-config:/app/.config
+      - snowluma-qq-data:/app/.local/share
+      - snowluma-qq2:/app/qq-acct2
+      - snowluma-qq3:/app/qq-acct3
+
+volumes:
+  snowluma-data:
+  snowluma-qq-config:
+  snowluma-qq-data:
+  snowluma-qq2:
+  snowluma-qq3:
+```
+
+容器启动时会为每个额外 `HOME` 生成一个 supervisor program，使用 `snowluma` 用户、同一个 `DISPLAY` 和同一组 `SNOWLUMA_QQ_FLAGS` 启动 QQ。这样 SnowLuma 进程和所有 QQ 进程同用户运行，hook 自动注入不会遇到手动 `docker exec` 误用 root 带来的权限问题。
+
+临时手动启动第二个账号也可以：
+
+```bash
+docker exec -u snowluma -e DISPLAY=:1 -e HOME=/app/qq-acct2 -d snowluma sh -lc 'qq --no-sandbox ${SNOWLUMA_QQ_FLAGS}'
+```
+
+注意每个 QQ 实例必须独占自己的 `HOME`，不要让两个实例共用 `/app` 或同一个 `/app/qq-acctN`。
+
 ## GPU / 内存（SwiftShader 软件渲染泄漏）
 
 容器内没有硬件 GPU，QQ（基于 Electron）的 GPU 进程会退回 SwiftShader 软件渲染。长时间停在登录界面（未扫码登录）时，SwiftShader 会不断分配且不回收内存，导致进程内存单调上涨。镜像默认通过 `SNOWLUMA_QQ_FLAGS` 给 QQ 关掉 GPU 与 SwiftShader：
@@ -168,4 +208,4 @@ docker run -e SNOWLUMA_QQ_FLAGS="" ... motricseven7/snowluma:latest
 
 ## 注意
 
-SnowLuma 当前使用 native addon 对 QQ 进程进行加载，容器启动时需要 `SYS_PTRACE` 能力和 `seccomp=unconfined`。请遵守第三方软件的使用许可和开源协议。
+SnowLuma 当前使用 native addon 对 QQ 进程进行加载，容器启动时需要 `SYS_PTRACE` 能力和 `seccomp=unconfined`。镜像内会给 `/usr/local/bin/node` 设置 `cap_sys_ptrace`，因此正常情况下不需要再修改宿主机 `kernel.yama.ptrace_scope`。请遵守第三方软件的使用许可和开源协议。

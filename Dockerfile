@@ -19,6 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     SNOWLUMA_LOG_LEVEL=info \
     SNOWLUMA_SCREEN=1920x1080x16 \
     SNOWLUMA_HOOK_AUTOLOAD=1 \
+    SNOWLUMA_EXTRA_QQ_HOMES="" \
     SNOWLUMA_QQ_FLAGS="--disable-gpu --disable-software-rasterizer --disable-gpu-compositing" \
     DISPLAY=:1
 
@@ -40,6 +41,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       iproute2 \
       libasound2 \
       libatspi2.0-0 \
+      libcap2-bin \
       libgbm1 \
       libgtk-3-0 \
       libnotify4 \
@@ -86,7 +88,7 @@ COPY start.sh /root/start.sh
 RUN chmod +x /root/start.sh && \
     groupadd --gid 1001 snowluma && \
     useradd --no-log-init --uid 1001 --gid 1001 --home-dir /app --shell /bin/bash snowluma && \
-    mkdir -p "${SNOWLUMA_HOME}" "${SNOWLUMA_DATA}" /app/.cache /app/.config /app/.local/share && \
+    mkdir -p "${SNOWLUMA_HOME}" "${SNOWLUMA_DATA}" /app/.cache /app/.config /app/.local/share /etc/supervisor/conf.d && \
     tar -xzf /tmp/SnowLuma.Framework.tar.gz -C "${SNOWLUMA_HOME}" && \
     case "$(dpkg --print-architecture)" in \
       amd64) native_arch="x64" ;; \
@@ -97,6 +99,7 @@ RUN chmod +x /root/start.sh && \
     test -f "${SNOWLUMA_HOME}/native/snowluma-linux-${native_arch}.node" && \
     test -f "${SNOWLUMA_HOME}/native/snowluma-linux-${native_arch}.so" && \
     test -f "${SNOWLUMA_HOME}/native/websocket-linux-${native_arch}.node" && \
+    setcap cap_sys_ptrace+ep /usr/local/bin/node && \
     rm -f /tmp/SnowLuma.Framework.tar.gz && \
     chown -R snowluma:snowluma /app /opt/QQ
 

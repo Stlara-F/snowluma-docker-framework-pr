@@ -10,12 +10,13 @@ set -euo pipefail
 : "${SNOWLUMA_LOG_LEVEL:=info}"
 : "${SNOWLUMA_SCREEN:=1920x1080x16}"
 : "${SNOWLUMA_HOOK_AUTOLOAD:=1}"
+: "${SNOWLUMA_EXTRA_QQ_HOMES:=}"
 : "${SNOWLUMA_QQ_FLAGS:=--disable-gpu --disable-software-rasterizer --disable-gpu-compositing}"
 
 export DISPLAY="${DISPLAY:-:1}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/snowluma-${SNOWLUMA_UID}}"
 export SNOWLUMA_HOOK_RUNTIME_DIR="${SNOWLUMA_HOOK_RUNTIME_DIR:-${XDG_RUNTIME_DIR}}"
-export SNOWLUMA_LOG_LEVEL SNOWLUMA_HOOK_AUTOLOAD SNOWLUMA_QQ_FLAGS
+export SNOWLUMA_LOG_LEVEL SNOWLUMA_HOOK_AUTOLOAD SNOWLUMA_EXTRA_QQ_HOMES SNOWLUMA_QQ_FLAGS
 
 DISPLAY_NUM="${DISPLAY#:}"
 DISPLAY_NUM="${DISPLAY_NUM%%.*}"
@@ -32,7 +33,8 @@ mkdir -p \
   "${SNOWLUMA_DATA}/config" \
   /app/.cache \
   /app/.config \
-  /app/.local/share
+  /app/.local/share \
+  /etc/supervisor/conf.d
 
 groupmod -o -g "${SNOWLUMA_GID}" snowluma
 usermod -o -u "${SNOWLUMA_UID}" -g "${SNOWLUMA_GID}" snowluma
@@ -47,6 +49,64 @@ chmod 700 "${XDG_RUNTIME_DIR}"
 # writable layer. Remove them before QQ starts so PID reuse cannot make a dead
 # hook socket look like a live SnowLuma injection.
 find "${XDG_RUNTIME_DIR}" -maxdepth 1 -type s -name 'mojo.*.*.sock' -delete 2>/dev/null || true
+
+generate_extra_qq_supervisor_conf() {
+  local conf="/etc/supervisor/conf.d/extra-qq.conf"
+  local homes="${SNOWLUMA_EXTRA_QQ_HOMES//,/ }"
+  local home
+  local index=1
+
+  rm -f "${conf}"
+
+  for home in ${homes}; do
+    [ -n "${home}" ] || continue
+
+    case "${home}" in
+      /app/*) ;;
+      *)
+        echo "Skipping extra QQ HOME '${home}': path must be under /app." >&2
+        continue
+        ;;
+    esac
+
+    case "${home}" in
+      *[!A-Za-z0-9_@%+=:,./-]*)
+        echo "Skipping extra QQ HOME '${home}': unsupported characters in path." >&2
+        continue
+        ;;
+    esac
+
+    mkdir -p "${home}"
+    chown -R "${SNOWLUMA_UID}:${SNOWLUMA_GID}" "${home}"
+
+    cat >> "${conf}" <<EOF
+[program:qq-extra-${index}]
+command=qq --no-sandbox %(ENV_SNOWLUMA_QQ_FLAGS)s
+directory=/app
+user=snowluma
+priority=15
+autostart=true
+autorestart=true
+startsecs=3
+stopasgroup=true
+killasgroup=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+environment=HOME="${home}",DISPLAY="%(ENV_DISPLAY)s",XDG_RUNTIME_DIR="%(ENV_XDG_RUNTIME_DIR)s",SNOWLUMA_HOOK_RUNTIME_DIR="%(ENV_SNOWLUMA_HOOK_RUNTIME_DIR)s"
+
+EOF
+
+    index=$((index + 1))
+  done
+
+  if [ "${index}" -gt 1 ]; then
+    echo "Configured $((index - 1)) extra QQ instance(s): ${SNOWLUMA_EXTRA_QQ_HOMES}"
+  fi
+}
+
+generate_extra_qq_supervisor_conf
 
 node <<'NODE'
 const fs = require('fs');
