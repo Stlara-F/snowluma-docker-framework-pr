@@ -3,4 +3,4 @@ artifacts/*
 
 # Local-only build input. CI downloads it on-demand from a SnowLuma release;
 # manual offline builds should also fetch (or hand-place) it without committing.
-/SnowLuma.Framework.tar.gz
+# /SnowLuma.Framework.tar.gz
