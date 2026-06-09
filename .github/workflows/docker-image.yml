@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: Docker image name, for example docker.io/example/snowluma
-        required: true
+        description: Docker image name, defaults to vars.DOCKER_IMAGE if set
+        required: false
         default: ""
       tag:
         description: Docker image tag
@@ -18,17 +18,17 @@ on:
         description: Push image after build
         required: true
         type: boolean
-        default: false
+        default: true
       platforms:
         description: Docker target platforms
         required: true
         default: "linux/amd64,linux/arm64"
       snowluma_tag:
-        description: SnowLuma release tag whose artifact should be baked in (defaults to `tag`).
+        description: Optional SnowLuma release tag to download instead of checked-in framework tarballs.
         required: false
         default: ""
       snowluma_repository:
-        description: SnowLuma source repository in `owner/repo` form. Leave blank to fall back to the checked-in SnowLuma.Framework.tar.gz.
+        description: SnowLuma source repository in `owner/repo` form (used only with snowluma_tag).
         required: false
         default: "SnowLuma/SnowLuma"
 
@@ -76,31 +76,17 @@ jobs:
       - name: Checkout Docker framework
         uses: actions/checkout@v6
 
-      # Pull the per-arch lite tarball from SnowLuma's GitHub release.
-      # `gh release download` waits for the asset to be ready, retries on
-      # transient failures, and fails loudly with a precise error if the
-      # tag/asset is missing. The Dockerfile itself runs the final
-      # arch-specific presence test inside the build context.
-      - name: Download SnowLuma release artifact
+      # Prefer checked-in SnowLuma.Framework*.tar.gz at repo root (dev sync).
+      # Only download from SnowLuma releases when workflow input snowluma_tag is set.
+      - name: Prepare SnowLuma.Framework.tar.gz
         env:
           GH_TOKEN: ${{ github.token }}
           SNOWLUMA_REPO: ${{ inputs.snowluma_repository }}
-          SNOWLUMA_TAG: ${{ inputs.snowluma_tag != '' && inputs.snowluma_tag || inputs.tag }}
-          ARCH: ${{ matrix.arch }}
+          SNOWLUMA_TAG: ${{ inputs.snowluma_tag }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          set -euo pipefail
-          case "${ARCH}" in
-            amd64) asset_arch="linux-x64" ;;
-            arm64) asset_arch="linux-arm64" ;;
-            *) echo "Unsupported matrix arch: ${ARCH}" >&2; exit 1 ;;
-          esac
-          asset="SnowLuma-${SNOWLUMA_TAG}-${asset_arch}-lite.tar.gz"
-          echo "Fetching ${asset} from ${SNOWLUMA_REPO}@${SNOWLUMA_TAG}"
-          gh release download "${SNOWLUMA_TAG}" \
-            --repo "${SNOWLUMA_REPO}" \
-            --pattern "${asset}" \
-            --output SnowLuma.Framework.tar.gz \
-            --clobber
+          chmod +x ./scripts/resolve-framework-tarball.sh
+          ./scripts/resolve-framework-tarball.sh
           ls -lh SnowLuma.Framework.tar.gz
 
       - name: Set up Docker buildx
@@ -121,8 +107,9 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           set -eu
+          IMAGE="${IMAGE:-${{ vars.DOCKER_IMAGE }}}"
           if [ -z "${IMAGE}" ]; then
-            echo "workflow input image is required"
+            echo "workflow input image is required (set vars.DOCKER_IMAGE in repo settings)" >&2
             exit 1
           fi
           if [ -z "${TAG}" ]; then
@@ -192,9 +179,11 @@ jobs:
           merge-multiple: true
 
       - name: Create Docker manifest
+        env:
+          IMAGE: ${{ inputs.image || vars.DOCKER_IMAGE }}
         run: |
           set -euo pipefail
-          image="${{ inputs.image }}"
+          image="${IMAGE}"
           tag="${{ inputs.tag }}"
           cd digests
           shopt -s nullglob
