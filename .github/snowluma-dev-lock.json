@@ -1,18 +1,18 @@
 {
-  "sha": "a2ee388b1059ef6e43afbda26ee0a96e102919f7",
-  "run_id": 27775032493,
-  "synced_at": "2026-06-18T17:00:59Z",
+  "sha": "0aff57c7fcc1b10effcdf89d81a718509fc61109",
+  "run_id": 27777008077,
+  "synced_at": "2026-06-18T17:30:52Z",
   "platforms": {
     "linux-x64": {
-      "sha": "a2ee388b1059ef6e43afbda26ee0a96e102919f7",
-      "run_id": 27775032493,
-      "synced_at": "2026-06-18T17:00:59Z",
+      "sha": "0aff57c7fcc1b10effcdf89d81a718509fc61109",
+      "run_id": 27777008077,
+      "synced_at": "2026-06-18T17:30:52Z",
       "file": "SnowLuma.Framework.linux-x64.tar.gz"
     },
     "linux-arm64": {
-      "sha": "a2ee388b1059ef6e43afbda26ee0a96e102919f7",
-      "run_id": 27775032493,
-      "synced_at": "2026-06-18T17:00:59Z",
+      "sha": "0aff57c7fcc1b10effcdf89d81a718509fc61109",
+      "run_id": 27777008077,
+      "synced_at": "2026-06-18T17:30:52Z",
       "file": "SnowLuma.Framework.linux-arm64.tar.gz"
     }
   }
