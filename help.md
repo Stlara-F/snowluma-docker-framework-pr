@@ -26,12 +26,13 @@ version: '3.8'
 
 # ============================================================
 # Shipyard Neo + AstrBot + Napcat + Snowluma 联合部署模板
-# 持久化路径：/opt/astrbot
+# 持久化路径：/opt/astrbot 和 /opt/snowluma 、/opt/snowluma_dev
 # 容器网络：astrbot_network
 # 使用方式：
 #   1. 修改环境变量中的 BAY_API_KEY（使用 openssl rand -hex 32 生成）和 VNC_PASSWD
 #   2. 确保 /opt/astrbot 目录存在且权限正确
 #   3. 在 Portainer 中粘贴此内容并部署
+#   4. 可按需删减compose部署
 # ============================================================
 
 services:
