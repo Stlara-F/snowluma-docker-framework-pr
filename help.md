@@ -94,7 +94,7 @@ services:
     security_opt:
       - seccomp=unconfined
     environment:
-      VNC_PASSWD: Aq10492..
+      VNC_PASSWD: vncpasswd
       SNOWLUMA_UID: 1000
       SNOWLUMA_GID: 1000
       SNOWLUMA_WEBUI_PORT: 5099
