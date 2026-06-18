@@ -29,7 +29,7 @@ version: '3.8'
 # 持久化路径：/opt/astrbot
 # 容器网络：astrbot_network
 # 使用方式：
-#   1. 修改环境变量中的 BAY_API_KEY（使用 openssl rand -hex 32 生成）
+#   1. 修改环境变量中的 BAY_API_KEY（使用 openssl rand -hex 32 生成）和 VNC_PASSWD
 #   2. 确保 /opt/astrbot 目录存在且权限正确
 #   3. 在 Portainer 中粘贴此内容并部署
 # ============================================================
