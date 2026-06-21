@@ -24,12 +24,11 @@ on:
         description: Tag used in artifact names (defaults to source_branch)
         required: false
         default: ""
-  # 可选：支持仓库调度，保留但不强制
   repository_dispatch:
     types: [snowluma-dev-updated]
 
 permissions:
-  contents: write   # 用于提交锁文件和 tarball
+  contents: write
 
 jobs:
   sync:
@@ -69,33 +68,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
           SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
           SOURCE_BRANCH: ${{ steps.config.outputs.source_branch }}
-          TARGET_TAG: ${{ steps.config.outputs.target_tag }}
         run: |
           set -euo pipefail
           LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
           LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
-
-          # 获取上游最新 commit SHA
           branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
           echo "Upstream HEAD: ${branch_tip}"
-
-          # 是否强制同步
           force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
-
-          # 读取上次记录的 SHA
           last_sha=""
           if [ -f "${LOCK_FILE}" ]; then
             last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
           fi
-
-          # 如果相同且未强制，则跳过
           if [ "${force}" != "1" ] && [ "${last_sha}" = "${branch_tip}" ]; then
             echo "No new commits, skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          # 查找该 commit 对应的成功 Dev Build 运行
           run_json="$(gh run list \
             --repo "${SOURCE_REPO}" \
             --branch "${SOURCE_BRANCH}" \
@@ -104,13 +92,11 @@ jobs:
             --status success \
             --limit 1 \
             --json databaseId 2>/dev/null || true)"
-
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
             echo "No successful Dev Build found for ${branch_tip}, skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
           echo "Found Dev Build run: ${run_id}"
           echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -150,15 +136,32 @@ jobs:
               echo "Artifact not found for pattern ${pattern}" >&2
               exit 1
             fi
-            tar -czf "${OLDPWD}/SnowLuma.Framework.${platform}.tar.gz" -C "${artifact_dir}" .
+            echo "Artifact directory: ${artifact_dir}"
+            cd "${artifact_dir}"
+
+            # 查找 index.mjs 的位置（如果不在根目录，则进入子目录）
+            if [ -f "index.mjs" ]; then
+              pack_dir="."
+            else
+              subdir="$(find . -maxdepth 2 -name "index.mjs" -printf "%h\n" | head -n1)"
+              if [ -n "${subdir}" ]; then
+                pack_dir="${subdir#./}"
+                echo "Found index.mjs in subdirectory: ${pack_dir}"
+              else
+                echo "ERROR: index.mjs not found in artifact" >&2
+                echo "Contents of artifact:"
+                ls -laR .
+                exit 1
+              fi
+            fi
+            # 打包该目录内容
+            tar -czf "${OLDPWD}/SnowLuma.Framework.${platform}.tar.gz" -C "${pack_dir}" .
             cd "${OLDPWD}"
             rm -rf "${tmp}"
-            # 如果是 x64，也作为默认的通用包
             if [ "${platform}" = "linux-x64" ]; then
               cp "SnowLuma.Framework.${platform}.tar.gz" SnowLuma.Framework.tar.gz
             fi
           done
-          # 如果没有 linux-x64，则用第一个平台作 fallback
           if [ ! -f SnowLuma.Framework.tar.gz ] && [ "${#platform_list[@]}" -gt 0 ]; then
             cp "SnowLuma.Framework.${platform_list[0]}.tar.gz" SnowLuma.Framework.tar.gz
           fi
@@ -181,11 +184,31 @@ jobs:
             local file="SnowLuma.Framework.${platform}.tar.gz"
             test -f "${file}" || { echo "Missing ${file}"; exit 1; }
             tmp="$(mktemp -d)"
+            echo "Extracting ${file} to ${tmp} for verification"
             tar -xzf "${file}" -C "${tmp}"
-            test -f "${tmp}/index.mjs"
-            test -f "${tmp}/native/snowluma-linux-${native_arch}.node"
-            test -f "${tmp}/native/snowluma-linux-${native_arch}.so"
-            test -f "${tmp}/native/websocket-linux-${native_arch}.node"
+            echo "Contents of ${tmp}:"
+            ls -laR "${tmp}" || true
+            if [ ! -f "${tmp}/index.mjs" ]; then
+              echo "ERROR: index.mjs not found in root" >&2
+              echo "Searching for index.mjs:"
+              find "${tmp}" -name "index.mjs"
+              exit 1
+            fi
+            if [ ! -f "${tmp}/native/snowluma-linux-${native_arch}.node" ]; then
+              echo "ERROR: native/snowluma-linux-${native_arch}.node not found" >&2
+              find "${tmp}" -name "*.node"
+              exit 1
+            fi
+            if [ ! -f "${tmp}/native/snowluma-linux-${native_arch}.so" ]; then
+              echo "ERROR: native/snowluma-linux-${native_arch}.so not found" >&2
+              find "${tmp}" -name "*.so"
+              exit 1
+            fi
+            if [ ! -f "${tmp}/native/websocket-linux-${native_arch}.node" ]; then
+              echo "ERROR: native/websocket-linux-${native_arch}.node not found" >&2
+              find "${tmp}" -name "*.node"
+              exit 1
+            fi
             rm -rf "${tmp}"
             echo "Verified ${file}"
           }
@@ -208,21 +231,15 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # 更新锁文件
           echo "{\"sha\": \"${HEAD_SHA}\"}" > "${LOCK_FILE}"
           git add "${LOCK_FILE}"
-
-          # 添加所有生成的 tarball
           shopt -s nullglob
           for file in SnowLuma.Framework*.tar.gz; do
             git add "${file}"
           done
-
           if git diff --staged --quiet; then
             echo "No changes to commit."
             exit 0
           fi
-
           git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
           git push
