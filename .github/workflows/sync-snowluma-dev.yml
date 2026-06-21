@@ -40,6 +40,7 @@ jobs:
       source_repo: ${{ steps.config.outputs.source_repo }}
       source_branch: ${{ steps.config.outputs.source_branch }}
       target_tag: ${{ steps.config.outputs.target_tag }}
+      lock_file: ${{ steps.compare.outputs.lock_file }}
     steps:
       - name: Checkout current repository
         uses: actions/checkout@v6
@@ -77,8 +78,10 @@ jobs:
           set -euo pipefail
           LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
           LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
+
           branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
           echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
+
           force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
           if [ "${force}" = "1" ]; then
             echo "Force sync enabled"
@@ -87,16 +90,19 @@ jobs:
             echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           last_sha=""
           if [ -f "${LOCK_FILE}" ]; then
             last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
           fi
+
           if [ "${last_sha}" = "${branch_tip}" ]; then
             echo "Already synced at ${branch_tip}; no update needed."
             echo "has_update=false" >> "$GITHUB_OUTPUT"
             echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           run_json="$(gh run list \
             --repo "${SOURCE_REPO}" \
             --workflow "Dev Build" \
@@ -105,13 +111,16 @@ jobs:
             --status success \
             --limit 1 \
             --json databaseId 2>/dev/null || true)"
+
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
             echo "No successful Dev Build yet for ${branch_tip}; will retry next schedule."
             echo "has_update=false" >> "$GITHUB_OUTPUT"
             echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
+          echo "Found Dev Build run: ${run_id}"
           echo "has_update=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
@@ -127,75 +136,18 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
 
-      - name: Download and package framework tarballs
+      - name: Sync SnowLuma framework tarballs
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
           SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
           TARGET_TAG: ${{ needs.check.outputs.target_tag }}
+          HEAD_SHA: ${{ needs.check.outputs.head_sha }}
           RUN_ID: ${{ needs.check.outputs.run_id }}
           PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
+          LOCK_FILE: ${{ needs.check.outputs.lock_file }}
         run: |
-          set -euo pipefail
-          IFS=',' read -r -a platform_list <<< "${PLATFORMS}"
-          for platform in "${platform_list[@]}"; do
-            platform="$(echo "${platform}" | xargs)"
-            [ -n "${platform}" ] || continue
-            case "${platform}" in
-              linux-x64)  asset_arch="linux-x64" ;;
-              linux-arm64) asset_arch="linux-arm64" ;;
-              *) echo "Unsupported platform: ${platform}" >&2; exit 1 ;;
-            esac
-            pattern="SnowLuma-${TARGET_TAG}-*-${asset_arch}"
-            echo "Downloading ${pattern}"
-            tmp="$(mktemp -d)"
-            cd "${tmp}"
-            gh run download "${RUN_ID}" \
-              --repo "${SOURCE_REPO}" \
-              --pattern "${pattern}" \
-              --dir .
-            artifact_dir="$(find . -maxdepth 1 -type d -name "SnowLuma-${TARGET_TAG}-*-${asset_arch}" | head -n1)"
-            if [ -z "${artifact_dir}" ]; then
-              echo "Artifact not found for pattern ${pattern}" >&2
-              exit 1
-            fi
-            cd "${artifact_dir}"
-            # 选择内部的 tarball（优先 -lite）
-            if [ -f "SnowLuma-${TARGET_TAG}-${asset_arch}-lite.tar.gz" ]; then
-              inner_tar="SnowLuma-${TARGET_TAG}-${asset_arch}-lite.tar.gz"
-            elif [ -f "SnowLuma-${TARGET_TAG}-${asset_arch}.tar.gz" ]; then
-              inner_tar="SnowLuma-${TARGET_TAG}-${asset_arch}.tar.gz"
-            else
-              echo "ERROR: No matching tarball found in artifact" >&2
-              ls -la
-              exit 1
-            fi
-            echo "Using inner tarball: ${inner_tar}"
-            extract_dir="$(mktemp -d)"
-            tar -xzf "${inner_tar}" -C "${extract_dir}"
-            # 确定实际内容目录（可能包含子目录）
-            if [ -f "${extract_dir}/index.mjs" ]; then
-              pack_dir="${extract_dir}"
-            else
-              subdir="$(find "${extract_dir}" -maxdepth 2 -name "index.mjs" -printf "%h\n" | head -n1)"
-              if [ -n "${subdir}" ]; then
-                pack_dir="${subdir}"
-              else
-                echo "ERROR: index.mjs not found in extracted tarball" >&2
-                find "${extract_dir}" -name "index.mjs"
-                exit 1
-              fi
-            fi
-            tar -czf "${OLDPWD}/SnowLuma.Framework.${platform}.tar.gz" -C "${pack_dir}" .
-            cd "${OLDPWD}"
-            rm -rf "${tmp}" "${extract_dir}"
-            if [ "${platform}" = "linux-x64" ]; then
-              cp "SnowLuma.Framework.${platform}.tar.gz" SnowLuma.Framework.tar.gz
-            fi
-          done
-          if [ ! -f SnowLuma.Framework.tar.gz ] && [ "${#platform_list[@]}" -gt 0 ]; then
-            cp "SnowLuma.Framework.${platform_list[0]}.tar.gz" SnowLuma.Framework.tar.gz
-          fi
-          ls -lh SnowLuma.Framework*.tar.gz
+          chmod +x ./scripts/sync-dev-framework.sh
+          ./scripts/sync-dev-framework.sh
 
       - name: Verify framework tarballs
         env:
@@ -239,15 +191,21 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Update lock file with new SHA
           echo "{\"sha\": \"${HEAD_SHA}\"}" > "${LOCK_FILE}"
           git add "${LOCK_FILE}"
+
+          # Add all generated tarballs
           shopt -s nullglob
           for file in SnowLuma.Framework*.tar.gz; do
             git add "${file}"
           done
+
           if git diff --staged --quiet; then
             echo "No changes to commit."
             exit 0
           fi
+
           git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
           git push
