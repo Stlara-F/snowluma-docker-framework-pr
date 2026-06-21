@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Force re-sync even if same commit
+        description: Re-download and rebuild even when lock file already matches
         required: false
         type: boolean
         default: false
       platforms:
-        description: Platforms to sync (comma-separated)
+        description: Comma-separated Dev Build platforms (linux-x64, linux-arm64)
         required: false
         default: "linux-x64,linux-arm64"
       source_repo:
@@ -31,13 +31,18 @@ permissions:
   contents: write
 
 jobs:
-  sync:
+  check:
     runs-on: ubuntu-22.04
+    outputs:
+      has_update: ${{ steps.compare.outputs.has_update }}
+      head_sha: ${{ steps.compare.outputs.head_sha }}
+      run_id: ${{ steps.compare.outputs.run_id }}
+      source_repo: ${{ steps.config.outputs.source_repo }}
+      source_branch: ${{ steps.config.outputs.source_branch }}
+      target_tag: ${{ steps.config.outputs.target_tag }}
     steps:
       - name: Checkout current repository
         uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
 
       - name: Resolve configuration
         id: config
@@ -62,8 +67,8 @@ jobs:
           echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Check for new commit and get Dev Build run ID
-        id: check
+      - name: Compare upstream with last sync state
+        id: compare
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
           SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
@@ -73,44 +78,61 @@ jobs:
           LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
           LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
           branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
-          echo "Upstream HEAD: ${branch_tip}"
+          echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
           force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
+          if [ "${force}" = "1" ]; then
+            echo "Force sync enabled"
+            echo "has_update=true" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           last_sha=""
           if [ -f "${LOCK_FILE}" ]; then
             last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
           fi
-          if [ "${force}" != "1" ] && [ "${last_sha}" = "${branch_tip}" ]; then
-            echo "No new commits, skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          if [ "${last_sha}" = "${branch_tip}" ]; then
+            echo "Already synced at ${branch_tip}; no update needed."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           run_json="$(gh run list \
             --repo "${SOURCE_REPO}" \
+            --workflow "Dev Build" \
             --branch "${SOURCE_BRANCH}" \
             --commit "${branch_tip}" \
-            --workflow "Dev Build" \
             --status success \
             --limit 1 \
             --json databaseId 2>/dev/null || true)"
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
-            echo "No successful Dev Build found for ${branch_tip}, skipping."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No successful Dev Build yet for ${branch_tip}; will retry next schedule."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
-          echo "Found Dev Build run: ${run_id}"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "has_update=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
           echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
 
+  sync:
+    needs: check
+    if: needs.check.outputs.has_update == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+
       - name: Download and package framework tarballs
-        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
-          TARGET_TAG: ${{ steps.config.outputs.target_tag }}
-          RUN_ID: ${{ steps.check.outputs.run_id }}
+          SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
+          TARGET_TAG: ${{ needs.check.outputs.target_tag }}
+          RUN_ID: ${{ needs.check.outputs.run_id }}
           PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
         run: |
           set -euo pipefail
@@ -136,28 +158,36 @@ jobs:
               echo "Artifact not found for pattern ${pattern}" >&2
               exit 1
             fi
-            echo "Artifact directory: ${artifact_dir}"
             cd "${artifact_dir}"
-
-            # 查找 index.mjs 的位置（如果不在根目录，则进入子目录）
-            if [ -f "index.mjs" ]; then
-              pack_dir="."
+            # 选择内部的 tarball（优先 -lite）
+            if [ -f "SnowLuma-${TARGET_TAG}-${asset_arch}-lite.tar.gz" ]; then
+              inner_tar="SnowLuma-${TARGET_TAG}-${asset_arch}-lite.tar.gz"
+            elif [ -f "SnowLuma-${TARGET_TAG}-${asset_arch}.tar.gz" ]; then
+              inner_tar="SnowLuma-${TARGET_TAG}-${asset_arch}.tar.gz"
             else
-              subdir="$(find . -maxdepth 2 -name "index.mjs" -printf "%h\n" | head -n1)"
+              echo "ERROR: No matching tarball found in artifact" >&2
+              ls -la
+              exit 1
+            fi
+            echo "Using inner tarball: ${inner_tar}"
+            extract_dir="$(mktemp -d)"
+            tar -xzf "${inner_tar}" -C "${extract_dir}"
+            # 确定实际内容目录（可能包含子目录）
+            if [ -f "${extract_dir}/index.mjs" ]; then
+              pack_dir="${extract_dir}"
+            else
+              subdir="$(find "${extract_dir}" -maxdepth 2 -name "index.mjs" -printf "%h\n" | head -n1)"
               if [ -n "${subdir}" ]; then
-                pack_dir="${subdir#./}"
-                echo "Found index.mjs in subdirectory: ${pack_dir}"
+                pack_dir="${subdir}"
               else
-                echo "ERROR: index.mjs not found in artifact" >&2
-                echo "Contents of artifact:"
-                ls -laR .
+                echo "ERROR: index.mjs not found in extracted tarball" >&2
+                find "${extract_dir}" -name "index.mjs"
                 exit 1
               fi
             fi
-            # 打包该目录内容
             tar -czf "${OLDPWD}/SnowLuma.Framework.${platform}.tar.gz" -C "${pack_dir}" .
             cd "${OLDPWD}"
-            rm -rf "${tmp}"
+            rm -rf "${tmp}" "${extract_dir}"
             if [ "${platform}" = "linux-x64" ]; then
               cp "SnowLuma.Framework.${platform}.tar.gz" SnowLuma.Framework.tar.gz
             fi
@@ -168,7 +198,6 @@ jobs:
           ls -lh SnowLuma.Framework*.tar.gz
 
       - name: Verify framework tarballs
-        if: steps.check.outputs.skip == 'false'
         env:
           PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
         run: |
@@ -184,31 +213,11 @@ jobs:
             local file="SnowLuma.Framework.${platform}.tar.gz"
             test -f "${file}" || { echo "Missing ${file}"; exit 1; }
             tmp="$(mktemp -d)"
-            echo "Extracting ${file} to ${tmp} for verification"
             tar -xzf "${file}" -C "${tmp}"
-            echo "Contents of ${tmp}:"
-            ls -laR "${tmp}" || true
-            if [ ! -f "${tmp}/index.mjs" ]; then
-              echo "ERROR: index.mjs not found in root" >&2
-              echo "Searching for index.mjs:"
-              find "${tmp}" -name "index.mjs"
-              exit 1
-            fi
-            if [ ! -f "${tmp}/native/snowluma-linux-${native_arch}.node" ]; then
-              echo "ERROR: native/snowluma-linux-${native_arch}.node not found" >&2
-              find "${tmp}" -name "*.node"
-              exit 1
-            fi
-            if [ ! -f "${tmp}/native/snowluma-linux-${native_arch}.so" ]; then
-              echo "ERROR: native/snowluma-linux-${native_arch}.so not found" >&2
-              find "${tmp}" -name "*.so"
-              exit 1
-            fi
-            if [ ! -f "${tmp}/native/websocket-linux-${native_arch}.node" ]; then
-              echo "ERROR: native/websocket-linux-${native_arch}.node not found" >&2
-              find "${tmp}" -name "*.node"
-              exit 1
-            fi
+            test -f "${tmp}/index.mjs"
+            test -f "${tmp}/native/snowluma-linux-${native_arch}.node"
+            test -f "${tmp}/native/snowluma-linux-${native_arch}.so"
+            test -f "${tmp}/native/websocket-linux-${native_arch}.node"
             rm -rf "${tmp}"
             echo "Verified ${file}"
           }
@@ -221,12 +230,11 @@ jobs:
           echo "All tarballs verified."
 
       - name: Commit and push updated framework
-        if: steps.check.outputs.skip == 'false'
         env:
-          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
-          SOURCE_BRANCH: ${{ steps.config.outputs.source_branch }}
-          HEAD_SHA: ${{ steps.check.outputs.head_sha }}
-          LOCK_FILE: ${{ steps.check.outputs.lock_file }}
+          SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ needs.check.outputs.source_branch }}
+          HEAD_SHA: ${{ needs.check.outputs.head_sha }}
+          LOCK_FILE: ${{ needs.check.outputs.lock_file }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
