@@ -76,8 +76,6 @@ jobs:
       - name: Checkout Docker framework
         uses: actions/checkout@v6
 
-      # Prefer checked-in SnowLuma.Framework*.tar.gz at repo root (dev sync).
-      # Only download from SnowLuma releases when workflow input snowluma_tag is set.
       - name: Prepare SnowLuma.Framework.tar.gz
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,10 +194,8 @@ jobs:
           for digest in "${digest_files[@]}"; do
             refs+=("${image}@sha256:${digest}")
           done
+          # 仅使用用户指定的标签，不自动添加 latest
           tags=(--tag "${image}:${tag}")
-          if [ "${tag}" != "latest" ]; then
-            tags+=(--tag "${image}:latest")
-          fi
           docker buildx imagetools create "${tags[@]}" "${refs[@]}"
           docker buildx imagetools inspect "${image}:${tag}"
 
