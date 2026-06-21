@@ -5,7 +5,6 @@ env:
 
 on:
   #schedule:
-    # Poll SnowLuma dev; Dev Build artifacts expire after ~3 days.
     #- cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
@@ -21,7 +20,7 @@ on:
       source_repo:
         description: Source repository in owner/repo format
         required: false
-        default: "SnowLuma/SnowLuma"
+        default: "Stlara-F/SnowLuma"
       source_branch:
         description: Source branch to sync from
         required: false
@@ -33,7 +32,6 @@ on:
   repository_dispatch:
     types:
       - snowluma-dev-updated
-    # payload can contain: source_repo, source_branch, target_tag
 
 permissions:
   contents: write
@@ -51,8 +49,6 @@ jobs:
         id: config
         run: |
           set -euo pipefail
-
-          # For workflow_dispatch, use inputs; for repository_dispatch, use client_payload
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             REPO="${{ inputs.source_repo }}"
             BRANCH="${{ inputs.source_branch }}"
@@ -65,12 +61,9 @@ jobs:
             echo "Unsupported event: ${{ github.event_name }}" >&2
             exit 1
           fi
-
-          # Defaults
-          REPO="${REPO:-SnowLuma/SnowLuma}"
+          REPO="${REPO:-Stlara-F/SnowLuma}"
           BRANCH="${BRANCH:-dev}"
           TAG="${TAG:-$BRANCH}"
-
           echo "source_repo=${REPO}" >> "$GITHUB_OUTPUT"
           echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -95,16 +88,12 @@ jobs:
           TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
         run: |
           set -euo pipefail
-
-          # Build lock file name based on repo+branch to avoid collisions
           LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
           LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
-
           branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
           echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
 
           force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
-
           if [ "${force}" = "1" ]; then
             echo "Force sync enabled"
             echo "has_update=true" >> "$GITHUB_OUTPUT"
@@ -113,12 +102,10 @@ jobs:
             exit 0
           fi
 
-          # Read last synced SHA from lock file
           last_sha=""
           if [ -f "${LOCK_FILE}" ]; then
             last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
           fi
-
           if [ "${last_sha}" = "${branch_tip}" ]; then
             echo "Already synced at ${branch_tip}; no update needed."
             echo "has_update=false" >> "$GITHUB_OUTPUT"
@@ -126,9 +113,7 @@ jobs:
             exit 0
           fi
 
-          # Look for a successful Dev Build workflow run for this commit
-          # We need to find the workflow name - it may vary; use 'Dev Build' as default but allow override? Hard to guess.
-          # We'll look for any workflow run on that commit with success and that produced artifacts.
+          # Find a successful run that produced artifacts
           run_json="$(gh run list \
             --repo "${SOURCE_REPO}" \
             --branch "${SOURCE_BRANCH}" \
@@ -136,18 +121,14 @@ jobs:
             --status success \
             --limit 5 \
             --json databaseId,headSha,workflowName 2>/dev/null || true)"
-
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
             echo "No successful workflow run yet for ${branch_tip}; will retry next schedule."
             echo "has_update=false" >> "$GITHUB_OUTPUT"
             echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          # Pick the first run that has artifacts (we can check later, but we'll assume success means artifacts exist)
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
           echo "Found successful run ID: ${run_id}"
-
           echo "has_update=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
@@ -163,23 +144,82 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
 
-      - name: Sync SnowLuma lite tarballs
+      # ---------- 内联同步逻辑（替代 sync-dev-framework.sh） ----------
+      - name: Download and package SnowLuma framework tarballs
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          HEAD_SHA: ${{ needs.check.outputs.head_sha }}
-          RUN_ID: ${{ needs.check.outputs.run_id }}
-          PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
           SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
-          SOURCE_BRANCH: ${{ needs.resolve-config.outputs.source_branch }}
           TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
+          RUN_ID: ${{ needs.check.outputs.run_id }}
+          PLATFORMS: ${{ github.event_name == 'workdown_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
         run: |
-          chmod +x ./scripts/sync-dev-framework.sh
-          ./scripts/sync-dev-framework.sh
+          set -euo pipefail
+
+          IFS=',' read -r -a platform_list <<< "${PLATFORMS}"
+          echo "Platforms: ${platform_list[*]}"
+
+          for platform in "${platform_list[@]}"; do
+            # Remove possible whitespace
+            platform="$(echo "${platform}" | xargs)"
+            [ -n "${platform}" ] || continue
+
+            # Determine asset arch name used in artifact
+            case "${platform}" in
+              linux-x64)  asset_arch="linux-x64" ;;
+              linux-arm64) asset_arch="linux-arm64" ;;
+              *) echo "Unsupported platform: ${platform}" >&2; exit 1 ;;
+            esac
+
+            # Artifact name pattern: SnowLuma-{TARGET_TAG}-{commit_hash}-{asset_arch}
+            pattern="SnowLuma-${TARGET_TAG}-*-${asset_arch}"
+            echo "Downloading artifact pattern '${pattern}' for platform ${platform} from run ${RUN_ID} (${SOURCE_REPO})"
+
+            # Create a temporary directory for this platform
+            tmp_dir="$(mktemp -d)"
+            cd "${tmp_dir}"
+
+            # Download the matching artifact (it will be placed in a subdirectory with the artifact name)
+            gh run download "${RUN_ID}" \
+              --repo "${SOURCE_REPO}" \
+              --pattern "${pattern}" \
+              --dir .
+
+            # Find the downloaded directory (the artifact name itself)
+            artifact_dir="$(find . -maxdepth 1 -type d -name "SnowLuma-${TARGET_TAG}-*-${asset_arch}" | head -n1)"
+            if [ -z "${artifact_dir}" ]; then
+              echo "No artifact downloaded for pattern '${pattern}'" >&2
+              exit 1
+            fi
+            echo "Artifact downloaded to: ${artifact_dir}"
+
+            # Pack its contents into SnowLuma.Framework.${platform}.tar.gz
+            tar -czf "${OLDPWD}/SnowLuma.Framework.${platform}.tar.gz" -C "${artifact_dir}" .
+            echo "Created SnowLuma.Framework.${platform}.tar.gz"
+
+            # Back to original working directory
+            cd "${OLDPWD}"
+            rm -rf "${tmp_dir}"
+
+            # If this is the first platform (or specifically linux-x64), also create the generic one
+            if [ "${platform}" = "linux-x64" ]; then
+              cp "SnowLuma.Framework.${platform}.tar.gz" SnowLuma.Framework.tar.gz
+              echo "Also created SnowLuma.Framework.tar.gz from ${platform}"
+            fi
+          done
+
+          # If linux-x64 was not in the list, create a default from the first platform
+          if [ ! -f SnowLuma.Framework.tar.gz ] && [ "${#platform_list[@]}" -gt 0 ]; then
+            first_platform="${platform_list[0]}"
+            echo "Creating fallback SnowLuma.Framework.tar.gz from ${first_platform}"
+            cp "SnowLuma.Framework.${first_platform}.tar.gz" SnowLuma.Framework.tar.gz
+          fi
+
+          echo "All tarballs created:"
+          ls -lh SnowLuma.Framework*.tar.gz || true
 
       - name: Verify framework tarballs
         env:
           PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
-          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
         run: |
           set -euo pipefail
           verify_platform() {
@@ -191,7 +231,7 @@ jobs:
               *) echo "Unsupported platform: ${platform}" >&2; return 1 ;;
             esac
             framework_file="SnowLuma.Framework.${platform}.tar.gz"
-            test -f "${framework_file}"
+            test -f "${framework_file}" || { echo "Missing ${framework_file}"; exit 1; }
             tmp="$(mktemp -d)"
             tar -xzf "${framework_file}" -C "${tmp}"
             test -f "${tmp}/index.mjs"
@@ -207,8 +247,8 @@ jobs:
             [ -n "${platform}" ] || continue
             verify_platform "${platform}"
           done
-          test -f SnowLuma.Framework.tar.gz
-          echo "Verified SnowLuma.Framework.tar.gz"
+          test -f SnowLuma.Framework.tar.gz || { echo "Missing SnowLuma.Framework.tar.gz"; exit 1; }
+          echo "All framework tarballs verified."
 
       - name: Upload framework tarballs
         uses: actions/upload-artifact@v7
@@ -227,14 +267,12 @@ jobs:
           set -euo pipefail
           LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
           LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
+          echo "{\"sha\": \"${{ needs.check.outputs.head_sha }}\"}" > "${LOCK_FILE}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Update lock file with new SHA
-          echo "{\"sha\": \"${{ needs.check.outputs.head_sha }}\"}" > "${LOCK_FILE}"
           git add "${LOCK_FILE}"
-
           shopt -s nullglob
           for file in SnowLuma.Framework*.tar.gz; do
             git add "${file}"
