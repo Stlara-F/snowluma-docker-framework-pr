@@ -18,16 +18,65 @@ on:
         description: Comma-separated Dev Build platforms (linux-x64, linux-arm64)
         required: false
         default: "linux-x64,linux-arm64"
+      source_repo:
+        description: Source repository in owner/repo format
+        required: false
+        default: "SnowLuma/SnowLuma"
+      source_branch:
+        description: Source branch to sync from
+        required: false
+        default: "dev"
+      target_tag:
+        description: Tag used in artifact names and Docker image tag (defaults to source_branch)
+        required: false
+        default: ""
   repository_dispatch:
     types:
       - snowluma-dev-updated
+    # payload can contain: source_repo, source_branch, target_tag
 
 permissions:
   contents: write
   actions: write
 
 jobs:
+  resolve-config:
+    runs-on: ubuntu-22.04
+    outputs:
+      source_repo: ${{ steps.config.outputs.source_repo }}
+      source_branch: ${{ steps.config.outputs.source_branch }}
+      target_tag: ${{ steps.config.outputs.target_tag }}
+    steps:
+      - name: Resolve configuration
+        id: config
+        run: |
+          set -euo pipefail
+
+          # For workflow_dispatch, use inputs; for repository_dispatch, use client_payload
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            REPO="${{ inputs.source_repo }}"
+            BRANCH="${{ inputs.source_branch }}"
+            TAG="${{ inputs.target_tag }}"
+          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            REPO="${{ github.event.client_payload.source_repo }}"
+            BRANCH="${{ github.event.client_payload.source_branch }}"
+            TAG="${{ github.event.client_payload.target_tag }}"
+          else
+            echo "Unsupported event: ${{ github.event_name }}" >&2
+            exit 1
+          fi
+
+          # Defaults
+          REPO="${REPO:-SnowLuma/SnowLuma}"
+          BRANCH="${BRANCH:-dev}"
+          TAG="${TAG:-$BRANCH}"
+
+          echo "source_repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
   check:
+    needs: resolve-config
     runs-on: ubuntu-22.04
     outputs:
       has_update: ${{ steps.compare.outputs.has_update }}
@@ -37,76 +86,92 @@ jobs:
       - name: Checkout Docker framework
         uses: actions/checkout@v6
 
-      - name: Compare upstream dev with last sync state
+      - name: Compare upstream with last sync state
         id: compare
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ needs.resolve-config.outputs.source_branch }}
+          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
         run: |
           set -euo pipefail
 
-          branch_tip="$(gh api repos/SnowLuma/SnowLuma/commits/dev --jq .sha)"
-          echo "Upstream dev HEAD: ${branch_tip}"
+          # Build lock file name based on repo+branch to avoid collisions
+          LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
+          LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
+
+          branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
+          echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
 
           force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
 
-          # Force re-sync regardless of state
           if [ "${force}" = "1" ]; then
+            echo "Force sync enabled"
             echo "has_update=true" >> "$GITHUB_OUTPUT"
             echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Read last synced SHA from lock file
           last_sha=""
-          if [ -f .github/snowluma-dev-lock.json ]; then
-            last_sha="$(jq -r '.sha // empty' .github/snowluma-dev-lock.json)"
+          if [ -f "${LOCK_FILE}" ]; then
+            last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
           fi
 
-          # Same SHA → no new commits since last sync
           if [ "${last_sha}" = "${branch_tip}" ]; then
             echo "Already synced at ${branch_tip}; no update needed."
             echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Look for a successful Dev Build workflow run for this commit
+          # We need to find the workflow name - it may vary; use 'Dev Build' as default but allow override? Hard to guess.
+          # We'll look for any workflow run on that commit with success and that produced artifacts.
           run_json="$(gh run list \
-            --repo SnowLuma/SnowLuma \
-            --workflow "Dev Build" \
-            --branch dev \
+            --repo "${SOURCE_REPO}" \
+            --branch "${SOURCE_BRANCH}" \
             --commit "${branch_tip}" \
             --status success \
-            --limit 1 \
-            --json databaseId,headSha 2>/dev/null || true)"
+            --limit 5 \
+            --json databaseId,headSha,workflowName 2>/dev/null || true)"
 
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
-            echo "No successful Dev Build yet for ${branch_tip}; will retry next schedule."
+            echo "No successful workflow run yet for ${branch_tip}; will retry next schedule."
             echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
+          # Pick the first run that has artifacts (we can check later, but we'll assume success means artifacts exist)
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
+          echo "Found successful run ID: ${run_id}"
+
           echo "has_update=true" >> "$GITHUB_OUTPUT"
           echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
 
   sync:
-    needs: check
+    needs: [resolve-config, check]
     if: needs.check.outputs.has_update == 'true'
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout Docker framework
         uses: actions/checkout@v6
         with:
-          # PAT required for git push (GITHUB_TOKEN cannot trigger downstream workflows)
           token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
 
-      - name: Sync SnowLuma dev lite tarballs
+      - name: Sync SnowLuma lite tarballs
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
           HEAD_SHA: ${{ needs.check.outputs.head_sha }}
           RUN_ID: ${{ needs.check.outputs.run_id }}
           PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
+          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ needs.resolve-config.outputs.source_branch }}
+          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
         run: |
           chmod +x ./scripts/sync-dev-framework.sh
           ./scripts/sync-dev-framework.sh
@@ -114,6 +179,7 @@ jobs:
       - name: Verify framework tarballs
         env:
           PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
+          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
         run: |
           set -euo pipefail
           verify_platform() {
@@ -147,38 +213,54 @@ jobs:
       - name: Upload framework tarballs
         uses: actions/upload-artifact@v7
         with:
-          name: SnowLuma.Framework-dev
+          name: SnowLuma.Framework-${{ needs.resolve-config.outputs.target_tag }}
           path: |
             SnowLuma.Framework*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
       - name: Commit dev framework tarballs
+        env:
+          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ needs.resolve-config.outputs.source_branch }}
         run: |
           set -euo pipefail
+          LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
+          LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/snowluma-dev-lock.json
+
+          # Update lock file with new SHA
+          echo "{\"sha\": \"${{ needs.check.outputs.head_sha }}\"}" > "${LOCK_FILE}"
+          git add "${LOCK_FILE}"
+
           shopt -s nullglob
           for file in SnowLuma.Framework*.tar.gz; do
             git add "${file}"
           done
+
           if git diff --staged --quiet; then
-            echo "Framework tarballs unchanged; skip commit."
+            echo "No changes to commit."
             exit 0
           fi
+
           sha="${{ needs.check.outputs.head_sha }}"
-          git commit -m "chore: update dev framework @ ${sha:0:12}"
+          git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${sha:0:12}"
           git push
 
       - name: Trigger Docker image build & push
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
+          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
         run: |
           IMAGE_NAME="${{ vars.DOCKER_IMAGE || 'motricseven7/snowluma' }}"
-          echo "Triggering docker-image.yml for ${IMAGE_NAME}:dev"
+          echo "Triggering docker-image.yml for ${IMAGE_NAME}:${TARGET_TAG} from ${SOURCE_REPO}"
           gh workflow run docker-image.yml \
             -f image="${IMAGE_NAME}" \
-            -f tag="dev" \
+            -f tag="${TARGET_TAG}" \
             -f push=true \
-            -f platforms="linux/amd64,linux/arm64"
+            -f platforms="linux/amd64,linux/arm64" \
+            -f snowluma_tag="${TARGET_TAG}" \
+            -f snowluma_repository="${SOURCE_REPO}"
