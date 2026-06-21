@@ -1,50 +1,45 @@
 name: sync-snowluma-dev
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
-  #schedule:
-    #- cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: Re-download and rebuild even when lock file already matches
+        description: Force re-sync even if same commit
         required: false
         type: boolean
         default: false
       platforms:
-        description: Comma-separated Dev Build platforms (linux-x64, linux-arm64)
+        description: Platforms to sync (comma-separated)
         required: false
         default: "linux-x64,linux-arm64"
       source_repo:
-        description: Source repository in owner/repo format
+        description: Source repository (owner/repo)
         required: false
         default: "Stlara-F/SnowLuma"
       source_branch:
-        description: Source branch to sync from
+        description: Source branch
         required: false
         default: "dev"
       target_tag:
-        description: Tag used in artifact names and Docker image tag (defaults to source_branch)
+        description: Tag used in artifact names (defaults to source_branch)
         required: false
         default: ""
+  # 可选：支持仓库调度，保留但不强制
   repository_dispatch:
-    types:
-      - snowluma-dev-updated
+    types: [snowluma-dev-updated]
 
 permissions:
-  contents: write
-  actions: write
+  contents: write   # 用于提交锁文件和 tarball
 
 jobs:
-  resolve-config:
+  sync:
     runs-on: ubuntu-22.04
-    outputs:
-      source_repo: ${{ steps.config.outputs.source_repo }}
-      source_branch: ${{ steps.config.outputs.source_branch }}
-      target_tag: ${{ steps.config.outputs.target_tag }}
     steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+
       - name: Resolve configuration
         id: config
         run: |
@@ -58,7 +53,7 @@ jobs:
             BRANCH="${{ github.event.client_payload.source_branch }}"
             TAG="${{ github.event.client_payload.target_tag }}"
           else
-            echo "Unsupported event: ${{ github.event_name }}" >&2
+            echo "Unsupported event" >&2
             exit 1
           fi
           REPO="${REPO:-Stlara-F/SnowLuma}"
@@ -68,211 +63,157 @@ jobs:
           echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-  check:
-    needs: resolve-config
-    runs-on: ubuntu-22.04
-    outputs:
-      has_update: ${{ steps.compare.outputs.has_update }}
-      head_sha: ${{ steps.compare.outputs.head_sha }}
-      run_id: ${{ steps.compare.outputs.run_id }}
-    steps:
-      - name: Checkout Docker framework
-        uses: actions/checkout@v6
-
-      - name: Compare upstream with last sync state
-        id: compare
+      - name: Check for new commit and get Dev Build run ID
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
-          SOURCE_BRANCH: ${{ needs.resolve-config.outputs.source_branch }}
-          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ steps.config.outputs.source_branch }}
+          TARGET_TAG: ${{ steps.config.outputs.target_tag }}
         run: |
           set -euo pipefail
           LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
           LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
+
+          # 获取上游最新 commit SHA
           branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
-          echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
+          echo "Upstream HEAD: ${branch_tip}"
 
+          # 是否强制同步
           force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
-          if [ "${force}" = "1" ]; then
-            echo "Force sync enabled"
-            echo "has_update=true" >> "$GITHUB_OUTPUT"
-            echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
-            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
 
+          # 读取上次记录的 SHA
           last_sha=""
           if [ -f "${LOCK_FILE}" ]; then
             last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
           fi
-          if [ "${last_sha}" = "${branch_tip}" ]; then
-            echo "Already synced at ${branch_tip}; no update needed."
-            echo "has_update=false" >> "$GITHUB_OUTPUT"
-            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+
+          # 如果相同且未强制，则跳过
+          if [ "${force}" != "1" ] && [ "${last_sha}" = "${branch_tip}" ]; then
+            echo "No new commits, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Find a successful run that produced artifacts
+          # 查找该 commit 对应的成功 Dev Build 运行
           run_json="$(gh run list \
             --repo "${SOURCE_REPO}" \
             --branch "${SOURCE_BRANCH}" \
             --commit "${branch_tip}" \
+            --workflow "Dev Build" \
             --status success \
-            --limit 5 \
-            --json databaseId,headSha,workflowName 2>/dev/null || true)"
+            --limit 1 \
+            --json databaseId 2>/dev/null || true)"
+
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
-            echo "No successful workflow run yet for ${branch_tip}; will retry next schedule."
-            echo "has_update=false" >> "$GITHUB_OUTPUT"
-            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+            echo "No successful Dev Build found for ${branch_tip}, skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
-          echo "Found successful run ID: ${run_id}"
-          echo "has_update=true" >> "$GITHUB_OUTPUT"
+          echo "Found Dev Build run: ${run_id}"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
           echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
 
-  sync:
-    needs: [resolve-config, check]
-    if: needs.check.outputs.has_update == 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout Docker framework
-        uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-
-      # ---------- 内联同步逻辑（替代 sync-dev-framework.sh） ----------
-      - name: Download and package SnowLuma framework tarballs
+      - name: Download and package framework tarballs
+        if: steps.check.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
-          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
-          RUN_ID: ${{ needs.check.outputs.run_id }}
-          PLATFORMS: ${{ github.event_name == 'workdown_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          TARGET_TAG: ${{ steps.config.outputs.target_tag }}
+          RUN_ID: ${{ steps.check.outputs.run_id }}
+          PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
         run: |
           set -euo pipefail
-
           IFS=',' read -r -a platform_list <<< "${PLATFORMS}"
-          echo "Platforms: ${platform_list[*]}"
-
           for platform in "${platform_list[@]}"; do
-            # Remove possible whitespace
             platform="$(echo "${platform}" | xargs)"
             [ -n "${platform}" ] || continue
-
-            # Determine asset arch name used in artifact
             case "${platform}" in
               linux-x64)  asset_arch="linux-x64" ;;
               linux-arm64) asset_arch="linux-arm64" ;;
               *) echo "Unsupported platform: ${platform}" >&2; exit 1 ;;
             esac
-
-            # Artifact name pattern: SnowLuma-{TARGET_TAG}-{commit_hash}-{asset_arch}
             pattern="SnowLuma-${TARGET_TAG}-*-${asset_arch}"
-            echo "Downloading artifact pattern '${pattern}' for platform ${platform} from run ${RUN_ID} (${SOURCE_REPO})"
-
-            # Create a temporary directory for this platform
-            tmp_dir="$(mktemp -d)"
-            cd "${tmp_dir}"
-
-            # Download the matching artifact (it will be placed in a subdirectory with the artifact name)
+            echo "Downloading ${pattern}"
+            tmp="$(mktemp -d)"
+            cd "${tmp}"
             gh run download "${RUN_ID}" \
               --repo "${SOURCE_REPO}" \
               --pattern "${pattern}" \
               --dir .
-
-            # Find the downloaded directory (the artifact name itself)
             artifact_dir="$(find . -maxdepth 1 -type d -name "SnowLuma-${TARGET_TAG}-*-${asset_arch}" | head -n1)"
             if [ -z "${artifact_dir}" ]; then
-              echo "No artifact downloaded for pattern '${pattern}'" >&2
+              echo "Artifact not found for pattern ${pattern}" >&2
               exit 1
             fi
-            echo "Artifact downloaded to: ${artifact_dir}"
-
-            # Pack its contents into SnowLuma.Framework.${platform}.tar.gz
             tar -czf "${OLDPWD}/SnowLuma.Framework.${platform}.tar.gz" -C "${artifact_dir}" .
-            echo "Created SnowLuma.Framework.${platform}.tar.gz"
-
-            # Back to original working directory
             cd "${OLDPWD}"
-            rm -rf "${tmp_dir}"
-
-            # If this is the first platform (or specifically linux-x64), also create the generic one
+            rm -rf "${tmp}"
+            # 如果是 x64，也作为默认的通用包
             if [ "${platform}" = "linux-x64" ]; then
               cp "SnowLuma.Framework.${platform}.tar.gz" SnowLuma.Framework.tar.gz
-              echo "Also created SnowLuma.Framework.tar.gz from ${platform}"
             fi
           done
-
-          # If linux-x64 was not in the list, create a default from the first platform
+          # 如果没有 linux-x64，则用第一个平台作 fallback
           if [ ! -f SnowLuma.Framework.tar.gz ] && [ "${#platform_list[@]}" -gt 0 ]; then
-            first_platform="${platform_list[0]}"
-            echo "Creating fallback SnowLuma.Framework.tar.gz from ${first_platform}"
-            cp "SnowLuma.Framework.${first_platform}.tar.gz" SnowLuma.Framework.tar.gz
+            cp "SnowLuma.Framework.${platform_list[0]}.tar.gz" SnowLuma.Framework.tar.gz
           fi
-
-          echo "All tarballs created:"
-          ls -lh SnowLuma.Framework*.tar.gz || true
+          ls -lh SnowLuma.Framework*.tar.gz
 
       - name: Verify framework tarballs
+        if: steps.check.outputs.skip == 'false'
         env:
-          PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux-x64,linux-arm64' }}
+          PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
         run: |
           set -euo pipefail
           verify_platform() {
             local platform="$1"
-            local native_arch framework_file tmp
+            local native_arch
             case "${platform}" in
               linux-x64) native_arch="x64" ;;
               linux-arm64) native_arch="arm64" ;;
-              *) echo "Unsupported platform: ${platform}" >&2; return 1 ;;
+              *) return 1 ;;
             esac
-            framework_file="SnowLuma.Framework.${platform}.tar.gz"
-            test -f "${framework_file}" || { echo "Missing ${framework_file}"; exit 1; }
+            local file="SnowLuma.Framework.${platform}.tar.gz"
+            test -f "${file}" || { echo "Missing ${file}"; exit 1; }
             tmp="$(mktemp -d)"
-            tar -xzf "${framework_file}" -C "${tmp}"
+            tar -xzf "${file}" -C "${tmp}"
             test -f "${tmp}/index.mjs"
             test -f "${tmp}/native/snowluma-linux-${native_arch}.node"
             test -f "${tmp}/native/snowluma-linux-${native_arch}.so"
             test -f "${tmp}/native/websocket-linux-${native_arch}.node"
             rm -rf "${tmp}"
-            echo "Verified ${framework_file}"
+            echo "Verified ${file}"
           }
-          IFS=',' read -r -a PLATFORM_LIST <<< "${PLATFORMS}"
-          for raw_platform in "${PLATFORM_LIST[@]}"; do
-            platform="$(echo "${raw_platform}" | xargs)"
-            [ -n "${platform}" ] || continue
-            verify_platform "${platform}"
+          IFS=',' read -r -a list <<< "${PLATFORMS}"
+          for p in "${list[@]}"; do
+            p="$(echo "${p}" | xargs)"
+            [ -n "${p}" ] && verify_platform "${p}"
           done
           test -f SnowLuma.Framework.tar.gz || { echo "Missing SnowLuma.Framework.tar.gz"; exit 1; }
-          echo "All framework tarballs verified."
+          echo "All tarballs verified."
 
-      - name: Upload framework tarballs
-        uses: actions/upload-artifact@v7
-        with:
-          name: SnowLuma.Framework-${{ needs.resolve-config.outputs.target_tag }}
-          path: |
-            SnowLuma.Framework*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Commit dev framework tarballs
+      - name: Commit and push updated framework
+        if: steps.check.outputs.skip == 'false'
         env:
-          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
-          SOURCE_BRANCH: ${{ needs.resolve-config.outputs.source_branch }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ steps.config.outputs.source_branch }}
+          HEAD_SHA: ${{ steps.check.outputs.head_sha }}
+          LOCK_FILE: ${{ steps.check.outputs.lock_file }}
         run: |
           set -euo pipefail
-          LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
-          LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
-          echo "{\"sha\": \"${{ needs.check.outputs.head_sha }}\"}" > "${LOCK_FILE}"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # 更新锁文件
+          echo "{\"sha\": \"${HEAD_SHA}\"}" > "${LOCK_FILE}"
           git add "${LOCK_FILE}"
+
+          # 添加所有生成的 tarball
           shopt -s nullglob
           for file in SnowLuma.Framework*.tar.gz; do
             git add "${file}"
@@ -283,22 +224,5 @@ jobs:
             exit 0
           fi
 
-          sha="${{ needs.check.outputs.head_sha }}"
-          git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${sha:0:12}"
+          git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
           git push
-
-      - name: Trigger Docker image build & push
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ needs.resolve-config.outputs.source_repo }}
-          TARGET_TAG: ${{ needs.resolve-config.outputs.target_tag }}
-        run: |
-          IMAGE_NAME="${{ vars.DOCKER_IMAGE || 'motricseven7/snowluma' }}"
-          echo "Triggering docker-image.yml for ${IMAGE_NAME}:${TARGET_TAG} from ${SOURCE_REPO}"
-          gh workflow run docker-image.yml \
-            -f image="${IMAGE_NAME}" \
-            -f tag="${TARGET_TAG}" \
-            -f push=true \
-            -f platforms="linux/amd64,linux/arm64" \
-            -f snowluma_tag="${TARGET_TAG}" \
-            -f snowluma_repository="${SOURCE_REPO}"
