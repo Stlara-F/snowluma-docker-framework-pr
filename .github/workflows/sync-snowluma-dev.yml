@@ -268,13 +268,11 @@ jobs:
       - name: Build and push by digest
         env:
           IMAGE: ${{ needs.check.outputs.dockerhub_image }}
-          TAG: ${{ needs.check.outputs.custom_tag }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           docker buildx build \
             --platform "${PLATFORM}" \
-            --tag "${IMAGE}:sync-${TAG}-${PLATFORM//\//-}" \
             --file ./Dockerfile \
             --output "type=image,push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file metadata.json \
