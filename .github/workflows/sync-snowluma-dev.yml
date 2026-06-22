@@ -24,14 +24,7 @@ on:
         description: '上游 artifact 文件名中的标签 (默认 dev，通常无需修改)'
         required: false
         default: "dev"
-      dockerhub_image:
-        description: 'DockerHub 镜像名 (如 yourname/snowluma)，填了才会触发 Docker 构建推送'
-        required: false
-        default: ""
-      custom_tag:
-        description: '推送到 DockerHub 的镜像标签 (如 test、v2.0)，与 dockerhub_image 配合使用'
-        required: false
-        default: ""
+
   repository_dispatch:
     types: [snowluma-dev-updated]
 
@@ -49,8 +42,6 @@ jobs:
       source_branch: ${{ steps.config.outputs.source_branch }}
       target_tag: ${{ steps.config.outputs.target_tag }}
       lock_file: ${{ steps.compare.outputs.lock_file }}
-      dockerhub_image: ${{ steps.config.outputs.dockerhub_image }}
-      custom_tag: ${{ steps.config.outputs.custom_tag }}
     steps:
       - name: Checkout current repository
         uses: actions/checkout@v6
@@ -74,13 +65,9 @@ jobs:
           REPO="${REPO:-Stlara-F/SnowLuma}"
           BRANCH="${BRANCH:-dev}"
           TAG="${TAG:-dev}"
-          DOCKER_IMAGE="${{ inputs.dockerhub_image || '' }}"
-          CUSTOM_TAG="${{ inputs.custom_tag || '' }}"
           echo "source_repo=${REPO}" >> "$GITHUB_OUTPUT"
           echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
           echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "dockerhub_image=${DOCKER_IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "custom_tag=${CUSTOM_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Compare upstream with last sync state
         id: compare
@@ -224,17 +211,3 @@ jobs:
           fi
           git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
           git push
-
-      - name: Trigger Docker publish
-        if: needs.check.outputs.dockerhub_image != '' && needs.check.outputs.custom_tag != ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          IMAGE: ${{ needs.check.outputs.dockerhub_image }}
-          TAG: ${{ needs.check.outputs.custom_tag }}
-        run: |
-          gh workflow run docker-image.yml \
-            --ref "${{ github.ref_name }}" \
-            --field image="${IMAGE}" \
-            --field tag="${TAG}" \
-            --field push=true \
-            --field platforms="linux/amd64,linux/arm64"
