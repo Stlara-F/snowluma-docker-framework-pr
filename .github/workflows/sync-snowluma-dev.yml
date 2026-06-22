@@ -207,7 +207,15 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          echo "{\"sha\": \"${HEAD_SHA}\"}" > "${LOCK_FILE}"
+
+          # Clean up stale lock files from previous syncs
+          LOCK_BASENAME="$(basename "${LOCK_FILE}")"
+          for stale in .github/snowluma-sync-*.json; do
+            [ "${stale}" = ".github/${LOCK_BASENAME}" ] && continue
+            git rm --ignore-unmatch "${stale}" 2>/dev/null || rm -f "${stale}"
+          done
+
+          echo "{\"sha\":\"${HEAD_SHA}\"}" > "${LOCK_FILE}"
           git add "${LOCK_FILE}"
           shopt -s nullglob
           for file in SnowLuma.Framework*.tar.gz; do
@@ -260,12 +268,13 @@ jobs:
       - name: Build and push by digest
         env:
           IMAGE: ${{ needs.check.outputs.dockerhub_image }}
+          TAG: ${{ needs.check.outputs.custom_tag }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           docker buildx build \
             --platform "${PLATFORM}" \
-            --tag "${IMAGE}" \
+            --tag "${IMAGE}:sync-${TAG}-${PLATFORM//\//-}" \
             --file ./Dockerfile \
             --output "type=image,push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file metadata.json \
