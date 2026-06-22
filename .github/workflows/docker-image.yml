@@ -23,14 +23,6 @@ on:
         description: '目标平台，多平台逗号分隔 (默认 linux/amd64,linux/arm64)'
         required: true
         default: "linux/amd64,linux/arm64"
-      snowluma_tag:
-        description: '【可选】从 GitHub Release 下载预编译包 (如 v1.8.5)，留空则使用仓库中已同步的 tarball'
-        required: false
-        default: ""
-      snowluma_repository:
-        description: '【配合 snowluma_tag】上游仓库 owner/repo (默认 SnowLuma/SnowLuma)'
-        required: false
-        default: "SnowLuma/SnowLuma"
 
 jobs:
   resolve:
@@ -78,9 +70,6 @@ jobs:
 
       - name: Prepare SnowLuma.Framework.tar.gz
         env:
-          GH_TOKEN: ${{ github.token }}
-          SNOWLUMA_REPO: ${{ inputs.snowluma_repository }}
-          SNOWLUMA_TAG: ${{ inputs.snowluma_tag }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           chmod +x ./scripts/resolve-framework-tarball.sh
