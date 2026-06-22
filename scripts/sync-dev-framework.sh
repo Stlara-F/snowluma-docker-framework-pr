@@ -1,140 +1,125 @@
 #!/usr/bin/env bash
-# Download SnowLuma dev-branch Dev Build lite tarballs into the repo root.
+# Download upstream Dev Build lite tarballs into the repo root.
 #
-# Required environment variables (provided by the workflow):
-#   SOURCE_REPO   - source repository (e.g., Stlara-F/SnowLuma)
-#   TARGET_TAG    - tag used in artifact names (e.g., dev)
-#   HEAD_SHA      - commit SHA to match artifacts
-#   RUN_ID        - workflow run ID of the Dev Build
-#   PLATFORMS     - comma-separated list (linux-x64,linux-arm64)
-#   LOCK_FILE     - path to lock file (optional, used for consistency only)
-#   GH_TOKEN      - GitHub token for gh CLI
+# Environment variables:
+#   SNOWLUMA_REPO            - upstream repo (default: SnowLuma/SnowLuma)
+#   HEAD_SHA                 - commit SHA (required)
+#   RUN_ID                   - workflow run ID (required)
+#   PLATFORMS                - comma-separated platforms (default: linux-x64,linux-arm64)
+#   ARTIFACT_NAME_TEMPLATE   - template with {sha}, {platform}, etc.
+#   SOURCE_BRANCH            - branch for template (default: dev)
+#   WORKFLOW_NAME            - workflow name for template (default: Dev Build)
+#   LITE_TARBALL_PATTERN     - suffix to identify lite tarballs (default: -lite.tar.gz)
 #
-# Example:
-#   SOURCE_REPO=Stlara-F/SnowLuma TARGET_TAG=dev HEAD_SHA=abc123 RUN_ID=12345678 \
-#   PLATFORMS=linux-x64,linux-arm64 LOCK_FILE=.github/snowluma-sync-abc.json \
-#   ./scripts/sync-dev-framework.sh
+# Template placeholders:
+#   {sha}, {sha_short}, {branch}, {platform}, {workflow},
+#   {repo_owner}, {repo_name}, {repo}
+#
+# Requires: gh CLI (https://cli.github.com/), unzip
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRAMEWORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-SOURCE_REPO="${SOURCE_REPO:-Stlara-F/SnowLuma}"
-TARGET_TAG="${TARGET_TAG:-dev}"
+SNOWLUMA_REPO="${SNOWLUMA_REPO:-SnowLuma/SnowLuma}"
 PLATFORMS="${PLATFORMS:-linux-x64,linux-arm64}"
 HEAD_SHA="${HEAD_SHA:-}"
 RUN_ID="${RUN_ID:-}"
-LOCK_FILE="${LOCK_FILE:-}"
+SOURCE_BRANCH="${SOURCE_BRANCH:-dev}"
+WORKFLOW_NAME="${WORKFLOW_NAME:-Dev Build}"
+ARTIFACT_NAME_TEMPLATE="${ARTIFACT_NAME_TEMPLATE:-SnowLuma-dev-{sha}-{platform}}"
+LITE_TARBALL_PATTERN="${LITE_TARBALL_PATTERN:--lite.tar.gz}"
 
-if [ -z "${HEAD_SHA}" ] || [ -z "${RUN_ID}" ]; then
-  echo "ERROR: HEAD_SHA and RUN_ID are required." >&2
-  exit 1
-fi
+[ -n "${HEAD_SHA}" ] && [ -n "${RUN_ID}" ] || {
+  echo "HEAD_SHA and RUN_ID are required." >&2; exit 1
+}
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "ERROR: gh CLI not found." >&2
-  exit 1
-fi
+command -v gh >/dev/null 2>&1 || { echo "gh CLI not found." >&2; exit 1; }
+command -v unzip >/dev/null 2>&1 || { echo "unzip is required." >&2; exit 1; }
 
-# Output path for a given platform
 framework_output_for_platform() {
   printf '%s/SnowLuma.Framework.%s.tar.gz' "${FRAMEWORK_DIR}" "$1"
 }
 
-# Find the inner tarball (prefer -lite) inside the downloaded artifact directory
-find_inner_tarball() {
-  local base_dir="$1"
+# ── Resolve artifact name from template ──
+resolve_artifact_name() {
+  local platform="$1"
+  local repo_owner="${SNOWLUMA_REPO%%/*}"
+  local repo_name="${SNOWLUMA_REPO#*/}"
+  local sha_short="${HEAD_SHA:0:12}"
+  local name="$ARTIFACT_NAME_TEMPLATE"
+  name="${name//\{sha\}/$HEAD_SHA}"
+  name="${name//\{sha_short\}/$sha_short}"
+  name="${name//\{branch\}/$SOURCE_BRANCH}"
+  name="${name//\{platform\}/$platform}"
+  name="${name//\{workflow\}/$WORKFLOW_NAME}"
+  name="${name//\{repo_owner\}/$repo_owner}"
+  name="${name//\{repo_name\}/$repo_name}"
+  name="${name//\{repo\}/$SNOWLUMA_REPO}"
+  printf '%s\n' "$name"
+}
+
+# ── Find lite tarball in downloaded artifact ──
+find_lite_tarball() {
+  local download_dir="$1"
   local platform="$2"
-  local lite_name full_name found
+  local artifact_name="$3"
+  local lite_name zip_path lite_path
 
-  lite_name="SnowLuma-${TARGET_TAG}-${platform}-lite.tar.gz"
-  full_name="SnowLuma-${TARGET_TAG}-${platform}.tar.gz"
+  lite_name="${artifact_name}${LITE_TARBALL_PATTERN}"
+  zip_path="${download_dir}/${artifact_name}.zip"
 
-  # 1. Directly in the artifact root
-  if [ -f "${base_dir}/${lite_name}" ]; then
-    printf '%s\n' "${base_dir}/${lite_name}"
+  if [ -f "${download_dir}/${lite_name}" ]; then
+    printf '%s\n' "${download_dir}/${lite_name}"
     return 0
   fi
-  if [ -f "${base_dir}/${full_name}" ]; then
-    printf '%s\n' "${base_dir}/${full_name}"
-    return 0
+  if [ -f "${zip_path}" ]; then
+    unzip -qo "${zip_path}" -d "${download_dir}/extracted"
+    lite_path="${download_dir}/extracted/${lite_name}"
+    [ -f "${lite_path}" ] && { printf '%s\n' "${lite_path}"; return 0; }
   fi
 
-  # 2. If artifact is a zip, extract and look inside
-  local zip_file
-  zip_file="$(find "${base_dir}" -maxdepth 1 -type f -name '*.zip' | head -n 1)"
-  if [ -n "${zip_file}" ]; then
-    local extract_dir="${base_dir}/extracted"
-    mkdir -p "${extract_dir}"
-    unzip -qo "${zip_file}" -d "${extract_dir}"
-    found="$(find "${extract_dir}" -maxdepth 1 -type f -name "${lite_name}" | head -n 1)"
-    if [ -n "${found}" ]; then
-      printf '%s\n' "${found}"
-      return 0
-    fi
-    found="$(find "${extract_dir}" -maxdepth 1 -type f -name "${full_name}" | head -n 1)"
-    if [ -n "${found}" ]; then
-      printf '%s\n' "${found}"
-      return 0
-    fi
+  zip_path="$(find "${download_dir}" -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+  if [ -n "${zip_path}" ]; then
+    unzip -qo "${zip_path}" -d "${download_dir}/extracted"
+    lite_path="$(find "${download_dir}/extracted" -maxdepth 1 -type f -name "*${LITE_TARBALL_PATTERN}" | head -n 1)"
+    [ -n "${lite_path}" ] && { printf '%s\n' "${lite_path}"; return 0; }
   fi
 
-  # 3. Recursive search (in case of nested directories)
-  found="$(find "${base_dir}" -type f -name "${lite_name}" | head -n 1)"
-  if [ -n "${found}" ]; then
-    printf '%s\n' "${found}"
-    return 0
-  fi
-  found="$(find "${base_dir}" -type f -name "${full_name}" | head -n 1)"
-  if [ -n "${found}" ]; then
-    printf '%s\n' "${found}"
-    return 0
-  fi
+  lite_path="$(find "${download_dir}" -maxdepth 2 -type f -name "*${LITE_TARBALL_PATTERN}" | head -n 1)"
+  [ -n "${lite_path}" ] && { printf '%s\n' "${lite_path}"; return 0; }
 
   return 1
 }
 
+# ── Sync single platform ──
 sync_platform() {
   local platform="$1"
-  local output artifact_name download_dir inner_tarball
-
-  case "${platform}" in
-    linux-x64|linux-arm64) ;;
-    *)
-      echo "Unsupported platform: ${platform}" >&2
-      return 1
-      ;;
-  esac
+  local output artifact_name download_dir lite_path
 
   output="$(framework_output_for_platform "${platform}")"
-  artifact_name="SnowLuma-${TARGET_TAG}-${HEAD_SHA}-${platform}"
+  artifact_name="$(resolve_artifact_name "${platform}")"
   download_dir="$(mktemp -d)"
 
-  echo "Downloading artifact ${artifact_name} from run ${RUN_ID} (${SOURCE_REPO})"
+  echo "Downloading ${artifact_name} from run ${RUN_ID} (${SNOWLUMA_REPO})"
   gh run download "${RUN_ID}" \
-    --repo "${SOURCE_REPO}" \
+    --repo "${SNOWLUMA_REPO}" \
     --name "${artifact_name}" \
     --dir "${download_dir}"
 
-  if ! inner_tarball="$(find_inner_tarball "${download_dir}" "${platform}")"; then
-    echo "ERROR: Could not find inner tarball for ${platform} under ${download_dir}" >&2
+  if ! lite_path="$(find_lite_tarball "${download_dir}" "${platform}" "${artifact_name}")"; then
+    echo "Expected lite tarball not found under ${download_dir}" >&2
     find "${download_dir}" -type f >&2 || true
     rm -rf "${download_dir}"
     return 1
   fi
 
-  if [ ! -f "${inner_tarball}" ]; then
-    echo "ERROR: Inner tarball missing: ${inner_tarball}" >&2
-    rm -rf "${download_dir}"
-    return 1
-  fi
-
-  # Copy the inner tarball to the final output
-  cp "${inner_tarball}" "${output}"
+  cp "${lite_path}" "${output}"
   rm -rf "${download_dir}"
   echo "Wrote ${output}"
 }
 
+# ── Main ──
 IFS=',' read -r -a PLATFORM_LIST <<< "${PLATFORMS}"
 for raw_platform in "${PLATFORM_LIST[@]}"; do
   platform="$(echo "${raw_platform}" | xargs)"
@@ -142,12 +127,9 @@ for raw_platform in "${PLATFORM_LIST[@]}"; do
   sync_platform "${platform}"
 done
 
-# Create a generic SnowLuma.Framework.tar.gz from linux-x64 (if available)
 x64_output="$(framework_output_for_platform linux-x64)"
 default_output="${FRAMEWORK_DIR}/SnowLuma.Framework.tar.gz"
 if [ -f "${x64_output}" ]; then
   cp "${x64_output}" "${default_output}"
   echo "Wrote ${default_output} (linux-x64 alias)"
 fi
-
-echo "Sync completed successfully."
