@@ -37,7 +37,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 jobs:
   check:
@@ -145,8 +144,6 @@ jobs:
     needs: check
     if: needs.check.outputs.has_update == 'true'
     runs-on: ubuntu-22.04
-    outputs:
-      new_sha: ${{ steps.commit-sha.outputs.new_sha }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -228,106 +225,16 @@ jobs:
           git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
           git push
 
-      - name: Record new commit SHA
-        id: commit-sha
-        run: echo "new_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-  publish:
-    needs: [check, sync]
-    if: needs.check.outputs.has_update == 'true' && needs.check.outputs.dockerhub_image != '' && needs.check.outputs.custom_tag != ''
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            os: ubuntu-22.04
-          - arch: arm64
-            platform: linux/arm64
-            os: ubuntu-22.04-arm
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.sync.outputs.new_sha }}
-
-      - name: Prepare platform tarball
+      - name: Trigger Docker publish
+        if: needs.check.outputs.dockerhub_image != '' && needs.check.outputs.custom_tag != ''
         env:
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          chmod +x ./scripts/resolve-framework-tarball.sh
-          ./scripts/resolve-framework-tarball.sh
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push by digest
-        env:
-          IMAGE: ${{ needs.check.outputs.dockerhub_image }}
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          set -euo pipefail
-          docker buildx build \
-            --platform "${PLATFORM}" \
-            --tag "${IMAGE}" \
-            --file ./Dockerfile \
-            --output "type=image,push-by-digest=true,name-canonical=true,push=true" \
-            --metadata-file metadata.json \
-            .
-          digest="$(jq -r '."containerimage.digest"' metadata.json)"
-          if [ -z "${digest}" ] || [ "${digest}" = "null" ]; then
-            echo "Unable to resolve pushed image digest" >&2
-            cat metadata.json >&2
-            exit 1
-          fi
-          mkdir -p digests
-          touch "digests/${digest#sha256:}"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: docker-digest-${{ matrix.arch }}
-          path: digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    if: needs.check.outputs.has_update == 'true' && needs.check.outputs.dockerhub_image != '' && needs.check.outputs.custom_tag != ''
-    needs: [check, sync, publish]
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - uses: actions/download-artifact@v7
-        with:
-          pattern: docker-digest-*
-          path: digests
-          merge-multiple: true
-
-      - name: Create manifest with custom tag
-        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
           IMAGE: ${{ needs.check.outputs.dockerhub_image }}
           TAG: ${{ needs.check.outputs.custom_tag }}
         run: |
-          set -euo pipefail
-          cd digests
-          shopt -s nullglob
-          digest_files=(*)
-          if [ "${#digest_files[@]}" -eq 0 ]; then
-            echo "No Docker image digests produced" >&2
-            exit 1
-          fi
-          refs=()
-          for f in "${digest_files[@]}"; do
-            refs+=("${IMAGE}@sha256:${f}")
-          done
-          docker buildx imagetools create --tag "${IMAGE}:${TAG}" "${refs[@]}"
-          docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          gh workflow run docker-image.yml \
+            --ref "${{ github.ref_name }}" \
+            --field image="${IMAGE}" \
+            --field tag="${TAG}" \
+            --field push=true \
+            --field platforms="linux/amd64,linux/arm64"
