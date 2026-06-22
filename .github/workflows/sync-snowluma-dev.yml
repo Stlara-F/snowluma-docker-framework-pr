@@ -1,211 +1,354 @@
-name: sync-snowluma-dev
+name: sync-dev-build
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   workflow_dispatch:
     inputs:
-      force:
-        description: Re-download and rebuild even when lock file already matches
+      # ── Source ──
+      repository:
+        description: 'Source repository (owner/repo)'
+        required: false
+        default: 'SnowLuma/SnowLuma'
+      branch:
+        description: 'Source branch'
+        required: false
+        default: 'dev'
+      workflow_name:
+        description: 'Source workflow name'
+        required: false
+        default: 'Dev Build'
+
+      # ── Artifact ──
+      artifact_name_template:
+        description: >
+          Artifact name template.
+          Placeholders: {sha}, {sha_short}, {branch}, {platform},
+          {workflow}, {repo_owner}, {repo_name}, {repo}
+        required: false
+        default: 'SnowLuma-dev-{sha}-{platform}'
+      platforms:
+        description: 'Platforms (comma-separated, e.g. linux-x64,linux-arm64)'
+        required: false
+        default: 'linux-x64,linux-arm64'
+      platform_map:
+        description: >
+          JSON: tarball_platform -> docker_platform.
+          e.g. {"linux-x64":"linux/amd64","linux-arm64":"linux/arm64"}
+        required: false
+        default: '{"linux-x64":"linux/amd64","linux-arm64":"linux/arm64"}'
+
+      # ── Docker ──
+      docker_image:
+        description: 'Docker image name (empty = vars.DOCKER_IMAGE)'
+        required: false
+        default: ''
+      docker_image_tag:
+        description: 'Docker image tag'
+        required: false
+        default: 'dev'
+
+      # ── Behavior ──
+      dry_run:
+        description: 'Check only; skip download and build'
         required: false
         type: boolean
         default: false
-      platforms:
-        description: Comma-separated Dev Build platforms (linux-x64, linux-arm64)
-        required: false
-        default: "linux-x64,linux-arm64"
-      source_repo:
-        description: Source repository (owner/repo)
-        required: false
-        default: "Stlara-F/SnowLuma"
-      source_branch:
-        description: Source branch
-        required: false
-        default: "dev"
-      target_tag:
-        description: Tag used in artifact names (defaults to source_branch)
-        required: false
-        default: ""
-  repository_dispatch:
-    types: [snowluma-dev-updated]
-
-permissions:
-  contents: write
 
 jobs:
-  check:
+  # ──────────────────────────────────
+  # 1. Validate
+  # ──────────────────────────────────
+  validate:
     runs-on: ubuntu-22.04
     outputs:
-      has_update: ${{ steps.compare.outputs.has_update }}
-      head_sha: ${{ steps.compare.outputs.head_sha }}
-      run_id: ${{ steps.compare.outputs.run_id }}
-      source_repo: ${{ steps.config.outputs.source_repo }}
-      source_branch: ${{ steps.config.outputs.source_branch }}
-      target_tag: ${{ steps.config.outputs.target_tag }}
-      lock_file: ${{ steps.compare.outputs.lock_file }}
+      repo_owner: ${{ steps.validate.outputs.repo_owner }}
+      repo_name: ${{ steps.validate.outputs.repo_name }}
     steps:
-      - name: Checkout current repository
-        uses: actions/checkout@v6
-
-      - name: Resolve configuration
-        id: config
-        run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            REPO="${{ inputs.source_repo }}"
-            BRANCH="${{ inputs.source_branch }}"
-            TAG="${{ inputs.target_tag }}"
-          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
-            REPO="${{ github.event.client_payload.source_repo }}"
-            BRANCH="${{ github.event.client_payload.source_branch }}"
-            TAG="${{ github.event.client_payload.target_tag }}"
-          else
-            echo "Unsupported event" >&2
-            exit 1
-          fi
-          REPO="${REPO:-Stlara-F/SnowLuma}"
-          BRANCH="${BRANCH:-dev}"
-          TAG="${TAG:-$BRANCH}"
-          echo "source_repo=${REPO}" >> "$GITHUB_OUTPUT"
-          echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
-          echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Compare upstream with last sync state
-        id: compare
+      - id: validate
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
-          SOURCE_BRANCH: ${{ steps.config.outputs.source_branch }}
+          REPO: ${{ inputs.repository }}
+          TAG: ${{ inputs.docker_image_tag }}
+          PLATFORM_MAP: ${{ inputs.platform_map }}
+          PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-          LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
-          LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
 
-          branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
-          echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
+          if ! [[ "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+            echo "Invalid repository: $REPO (expected owner/repo)" >&2; exit 1
+          fi
+          echo "repo_owner=${REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo_name=${REPO#*/}" >> "$GITHUB_OUTPUT"
 
-          force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
-          if [ "${force}" = "1" ]; then
-            echo "Force sync enabled"
-            echo "has_update=true" >> "$GITHUB_OUTPUT"
-            echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
-            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
-            exit 0
+          if ! [[ "$TAG" =~ ^[a-z0-9._-]+$ ]]; then
+            echo "Invalid Docker tag: $TAG (must match [a-z0-9._-]+)" >&2; exit 1
           fi
 
-          last_sha=""
-          if [ -f "${LOCK_FILE}" ]; then
-            last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
-          fi
+          echo "$PLATFORM_MAP" | jq empty >/dev/null 2>&1 || {
+            echo "platform_map is not valid JSON" >&2; exit 1
+          }
 
-          if [ "${last_sha}" = "${branch_tip}" ]; then
-            echo "Already synced at ${branch_tip}; no update needed."
-            echo "has_update=false" >> "$GITHUB_OUTPUT"
-            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          IFS=',' read -ra list <<< "$PLATFORMS"
+          for p in "${list[@]}"; do
+            p="$(echo "$p" | xargs)"; [ -z "$p" ] && continue
+            if ! echo "$PLATFORM_MAP" | jq -e --arg p "$p" 'has($p)' >/dev/null 2>&1; then
+              echo "Platform '$p' not in platform_map" >&2; exit 1
+            fi
+          done
+
+  # ──────────────────────────────────
+  # 2. Check upstream
+  # ──────────────────────────────────
+  check:
+    needs: validate
+    runs-on: ubuntu-22.04
+    outputs:
+      has_update: ${{ steps.check.outputs.has_update }}
+      head_sha: ${{ steps.check.outputs.head_sha }}
+      run_id: ${{ steps.check.outputs.run_id }}
+      is_dry_run: ${{ steps.check.outputs.is_dry_run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || github.token }}
+        run: |
+          set -euo pipefail
+          is_dry_run="${{ inputs.dry_run == true && 'true' || 'false' }}"
+          echo "is_dry_run=${is_dry_run}" >> "$GITHUB_OUTPUT"
+
+          repo="${{ inputs.repository }}"
+          branch="${{ inputs.branch }}"
+          workflow="${{ inputs.workflow_name }}"
+
+          branch_tip="$(gh api "repos/${repo}/commits/${branch}" --jq .sha)"
+          echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
+          echo "Upstream ${repo}@${branch} HEAD: ${branch_tip}"
 
           run_json="$(gh run list \
-            --repo "${SOURCE_REPO}" \
-            --workflow "Dev Build" \
-            --branch "${SOURCE_BRANCH}" \
+            --repo "${repo}" \
+            --workflow "${workflow}" \
+            --branch "${branch}" \
             --commit "${branch_tip}" \
             --status success \
             --limit 1 \
-            --json databaseId 2>/dev/null || true)"
+            --json databaseId,headSha 2>/dev/null || true)"
 
           if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
-            echo "No successful Dev Build yet for ${branch_tip}; will retry next schedule."
-            echo "has_update=false" >> "$GITHUB_OUTPUT"
-            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "No successful ${workflow} run found for ${branch_tip}."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
           run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
-          echo "Found Dev Build run: ${run_id}"
           echo "has_update=true" >> "$GITHUB_OUTPUT"
-          echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+          echo "Found run #${run_id} for ${branch_tip:0:12}"
 
-  sync:
+      - name: Dry run report
+        if: ${{ inputs.dry_run && steps.check.outputs.has_update == 'true' }}
+        run: |
+          echo "=== DRY RUN ==="
+          echo "Repository: ${{ inputs.repository }}"
+          echo "Branch:     ${{ inputs.branch }}"
+          echo "Workflow:   ${{ inputs.workflow_name }}"
+          echo "SHA:        ${{ steps.check.outputs.head_sha }}"
+          echo "Run ID:     ${{ steps.check.outputs.run_id }}"
+          echo "Tag:        ${{ inputs.docker_image_tag }}"
+          echo "Would download artifacts and build Docker image."
+
+  # ──────────────────────────────────
+  # 3. Download artifacts
+  # ──────────────────────────────────
+  download:
     needs: check
-    if: needs.check.outputs.has_update == 'true'
+    if: ${{ needs.check.outputs.has_update == 'true' && needs.check.outputs.is_dry_run != 'true' }}
     runs-on: ubuntu-22.04
+    outputs:
+      platforms: ${{ steps.check_platforms.outputs.platforms }}
     steps:
-      - name: Checkout current repository
-        uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+      - uses: actions/checkout@v6
 
-      - name: Sync SnowLuma framework tarballs
+      - name: Download artifacts from upstream
+        id: download
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
-          SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
-          TARGET_TAG: ${{ needs.check.outputs.target_tag }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || github.token }}
+          SNOWLUMA_REPO: ${{ inputs.repository }}
           HEAD_SHA: ${{ needs.check.outputs.head_sha }}
           RUN_ID: ${{ needs.check.outputs.run_id }}
-          PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
-          LOCK_FILE: ${{ needs.check.outputs.lock_file }}
+          SOURCE_BRANCH: ${{ inputs.branch }}
+          WORKFLOW_NAME: ${{ inputs.workflow_name }}
+          ARTIFACT_NAME_TEMPLATE: ${{ inputs.artifact_name_template }}
+          PLATFORMS: ${{ inputs.platforms }}
         run: |
           chmod +x ./scripts/sync-dev-framework.sh
           ./scripts/sync-dev-framework.sh
 
-      - name: Verify framework tarballs
-        env:
-          PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
+      - name: List downloaded platforms
+        id: check_platforms
         run: |
-          set -euo pipefail
-          verify_platform() {
-            local platform="$1"
-            local native_arch
-            case "${platform}" in
-              linux-x64) native_arch="x64" ;;
-              linux-arm64) native_arch="arm64" ;;
-              *) return 1 ;;
-            esac
-            local file="SnowLuma.Framework.${platform}.tar.gz"
-            test -f "${file}" || { echo "Missing ${file}"; exit 1; }
-            tmp="$(mktemp -d)"
-            tar -xzf "${file}" -C "${tmp}"
-            test -f "${tmp}/index.mjs"
-            test -f "${tmp}/native/snowluma-linux-${native_arch}.node"
-            test -f "${tmp}/native/snowluma-linux-${native_arch}.so"
-            test -f "${tmp}/native/websocket-linux-${native_arch}.node"
-            rm -rf "${tmp}"
-            echo "Verified ${file}"
-          }
-          IFS=',' read -r -a list <<< "${PLATFORMS}"
+          platforms=""
+          IFS=',' read -ra list <<< "${{ inputs.platforms }}"
           for p in "${list[@]}"; do
-            p="$(echo "${p}" | xargs)"
-            [ -n "${p}" ] && verify_platform "${p}"
+            p="$(echo "$p" | xargs)"; [ -z "$p" ] && continue
+            [ -f "SnowLuma.Framework.${p}.tar.gz" ] && platforms="${platforms}${platforms:+,}${p}"
           done
-          test -f SnowLuma.Framework.tar.gz || { echo "Missing SnowLuma.Framework.tar.gz"; exit 1; }
-          echo "All tarballs verified."
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+          echo "Downloaded: $platforms"
 
-      - name: Commit and push updated framework
+      - name: Upload framework tarballs
+        uses: actions/upload-artifact@v7
+        with:
+          name: framework-tarballs
+          path: SnowLuma.Framework*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # ──────────────────────────────────
+  # 4. Resolve build matrix
+  # ──────────────────────────────────
+  resolve:
+    needs: download
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - id: resolve
         env:
-          SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
-          SOURCE_BRANCH: ${{ needs.check.outputs.source_branch }}
-          HEAD_SHA: ${{ needs.check.outputs.head_sha }}
-          LOCK_FILE: ${{ needs.check.outputs.lock_file }}
+          PLATFORM_MAP: ${{ inputs.platform_map }}
+          DOWNLOADED_PLATFORMS: ${{ needs.download.outputs.platforms }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Update lock file with new SHA
-          echo "{\"sha\": \"${HEAD_SHA}\"}" > "${LOCK_FILE}"
-          git add "${LOCK_FILE}"
-
-          # Add all generated tarballs
-          shopt -s nullglob
-          for file in SnowLuma.Framework*.tar.gz; do
-            git add "${file}"
+          matrix='{"include":['
+          separator=''
+          IFS=',' read -ra platforms <<< "$DOWNLOADED_PLATFORMS"
+          for platform in "${platforms[@]}"; do
+            [ -z "$platform" ] && continue
+            docker_platform=$(echo "$PLATFORM_MAP" | jq -r --arg p "$platform" '.[$p]')
+            [ "$docker_platform" = "null" ] && continue
+            case "$docker_platform" in
+              linux/amd64) os="ubuntu-22.04" ;;
+              linux/arm64) os="ubuntu-22.04-arm" ;;
+              *) echo "Warning: no runner for $docker_platform; skip" >&2; continue ;;
+            esac
+            matrix="${matrix}${separator}{\"tarball_platform\":\"${platform}\",\"docker_platform\":\"${docker_platform}\",\"os\":\"${os}\"}"
+            separator=','
           done
+          matrix="${matrix}]}"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
 
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-            exit 0
+  # ──────────────────────────────────
+  # 5. Build per platform
+  # ──────────────────────────────────
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.matrix != '{"include":[]}'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download framework tarballs
+        uses: actions/download-artifact@v7
+        with:
+          name: framework-tarballs
+          path: .
+
+      - name: Resolve framework tarball
+        env:
+          PLATFORM: ${{ matrix.docker_platform }}
+        run: |
+          chmod +x ./scripts/resolve-framework-tarball.sh
+          ./scripts/resolve-framework-tarball.sh
+          ls -lh SnowLuma.Framework.tar.gz
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        env:
+          IMAGE: ${{ inputs.docker_image || vars.DOCKER_IMAGE }}
+          TAG: ${{ inputs.docker_image_tag }}
+          PLATFORM: ${{ matrix.docker_platform }}
+        run: |
+          set -eu
+          if [ -z "${IMAGE}" ]; then
+            echo "docker_image input is required (set vars.DOCKER_IMAGE or provide input)" >&2
+            exit 1
           fi
+          docker buildx build \
+            --platform "${PLATFORM}" \
+            --tag "${IMAGE}" \
+            --file ./Dockerfile \
+            --output "type=image,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file metadata.json \
+            .
+          digest="$(jq -r '."containerimage.digest"' metadata.json)"
+          if [ -z "${digest}" ] || [ "${digest}" = "null" ]; then
+            echo "Unable to resolve pushed image digest" >&2
+            cat metadata.json >&2; exit 1
+          fi
+          mkdir -p digests
+          touch "digests/${digest#sha256:}"
 
-          git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
-          git push
+      - name: Upload image digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-digest-${{ matrix.tarball_platform }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ──────────────────────────────────
+  # 6. Merge multi-arch manifest
+  # ──────────────────────────────────
+  merge:
+    needs: build
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Download image digests
+        uses: actions/download-artifact@v7
+        with:
+          pattern: docker-digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Create and push multi-arch manifest
+        env:
+          IMAGE: ${{ inputs.docker_image || vars.DOCKER_IMAGE }}
+          TAG: ${{ inputs.docker_image_tag }}
+        run: |
+          set -euo pipefail
+          cd digests
+          shopt -s nullglob
+          digest_files=(*)
+          if [ "${#digest_files[@]}" -eq 0 ]; then
+            echo "No digests found; all builds may have failed" >&2
+            exit 1
+          fi
+          refs=()
+          for digest in "${digest_files[@]}"; do
+            refs+=("${IMAGE}@sha256:${digest}")
+          done
+          tags=(--tag "${IMAGE}:${TAG}")
+          if [ "${TAG}" != "latest" ]; then
+            tags+=(--tag "${IMAGE}:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
