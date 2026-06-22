@@ -21,9 +21,9 @@ on:
         required: false
         default: "dev"
       target_tag:
-        description: Tag used in artifact names (defaults to source_branch)
+        description: Tag used in artifact names (defaults to "dev")
         required: false
-        default: ""
+        default: "dev"
       dockerhub_image:
         description: DockerHub image name (e.g., yourusername/snowluma)
         required: false
@@ -74,7 +74,7 @@ jobs:
           fi
           REPO="${REPO:-Stlara-F/SnowLuma}"
           BRANCH="${BRANCH:-dev}"
-          TAG="${TAG:-$BRANCH}"
+          TAG="${TAG:-dev}"
           DOCKER_IMAGE="${{ inputs.dockerhub_image || '' }}"
           CUSTOM_TAG="${{ inputs.custom_tag || '' }}"
           echo "source_repo=${REPO}" >> "$GITHUB_OUTPUT"
