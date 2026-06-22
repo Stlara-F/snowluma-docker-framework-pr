@@ -7,28 +7,28 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: Docker image name, defaults to vars.DOCKER_IMAGE if set
+        description: 'DockerHub 镜像名 (如 yourname/snowluma)，配合 tag 构成推送目标'
         required: false
         default: ""
       tag:
-        description: Docker image tag
+        description: 'DockerHub 镜像标签 (如 test、v1.0)'
         required: true
         default: ""
       push:
-        description: Push image after build
+        description: '构建完成后推送到 DockerHub'
         required: true
         type: boolean
         default: true
       platforms:
-        description: Docker target platforms
+        description: '目标平台，多平台逗号分隔 (默认 linux/amd64,linux/arm64)'
         required: true
         default: "linux/amd64,linux/arm64"
       snowluma_tag:
-        description: Optional SnowLuma release tag to download instead of checked-in framework tarballs.
+        description: '【可选】从 GitHub Release 下载预编译包 (如 v1.8.5)，留空则使用仓库中已同步的 tarball'
         required: false
         default: ""
       snowluma_repository:
-        description: SnowLuma source repository in `owner/repo` form (used only with snowluma_tag).
+        description: '【配合 snowluma_tag】上游仓库 owner/repo (默认 SnowLuma/SnowLuma)'
         required: false
         default: "SnowLuma/SnowLuma"
 

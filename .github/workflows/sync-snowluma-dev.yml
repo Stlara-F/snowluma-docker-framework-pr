@@ -4,32 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: Re-download and rebuild even when lock file already matches
+        description: '强制重新下载+构建，忽略上次同步记录'
         required: false
         type: boolean
         default: false
       platforms:
-        description: Comma-separated Dev Build platforms (linux-x64, linux-arm64)
+        description: '预编译包平台，逗号分隔 (默认 linux-x64,linux-arm64)'
         required: false
         default: "linux-x64,linux-arm64"
       source_repo:
-        description: Source repository (owner/repo)
+        description: '上游仓库 (owner/repo)，去哪里下载 Dev_Build 产物'
         required: false
         default: "Stlara-F/SnowLuma"
       source_branch:
-        description: Source branch
+        description: '上游分支，从哪个分支获取 Dev_Build'
         required: false
         default: "dev"
       target_tag:
-        description: Tag used in artifact names (defaults to "dev")
+        description: '上游 artifact 文件名中的标签 (默认 dev，通常无需修改)'
         required: false
         default: "dev"
       dockerhub_image:
-        description: DockerHub image name (e.g., yourusername/snowluma)
+        description: 'DockerHub 镜像名 (如 yourname/snowluma)，填了才会触发 Docker 构建推送'
         required: false
         default: ""
       custom_tag:
-        description: Custom Docker image tag (required for Docker push)
+        description: '推送到 DockerHub 的镜像标签 (如 test、v2.0)，与 dockerhub_image 配合使用'
         required: false
         default: ""
   repository_dispatch:
