@@ -117,7 +117,7 @@ jobs:
           if [ "${PUSH}" = "true" ]; then
             docker buildx build \
               --platform "${PLATFORM}" \
-              --tag "${IMAGE}" \
+              --tag "${IMAGE}:build-${TAG}-${PLATFORM//\//-}" \
               --file ./Dockerfile \
               --output "type=image,push-by-digest=true,name-canonical=true,push=true" \
               --metadata-file metadata.json \
