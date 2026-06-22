@@ -106,9 +106,8 @@ jobs:
           if [ "${PUSH}" = "true" ]; then
             docker buildx build \
               --platform "${PLATFORM}" \
-              --tag "${IMAGE}" \
               --file ./Dockerfile \
-              --output "type=image,push-by-digest=true,name-canonical=true,push=true" \
+              --output "type=image,name=${IMAGE},push-by-digest=true,push=true" \
               --metadata-file metadata.json \
               .
             digest="$(jq -r '."containerimage.digest"' metadata.json)"
