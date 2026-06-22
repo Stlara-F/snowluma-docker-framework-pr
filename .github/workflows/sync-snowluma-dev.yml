@@ -2,11 +2,12 @@ name: sync-dev-build
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PLATFORMS: linux-x64,linux-arm64
+  PLATFORM_MAP: '{"linux-x64":"linux/amd64","linux-arm64":"linux/arm64"}'
 
 on:
   workflow_dispatch:
     inputs:
-      # ── Source ──
       repository:
         description: 'Source repository (owner/repo)'
         required: false
@@ -19,27 +20,13 @@ on:
         description: 'Source workflow name'
         required: false
         default: 'Dev Build'
-
-      # ── Artifact ──
       artifact_name_template:
         description: >
-          Artifact name template.
+          Artifact name template (default: SnowLuma-dev-{sha}-{platform}).
           Placeholders: {sha}, {sha_short}, {branch}, {platform},
           {workflow}, {repo_owner}, {repo_name}, {repo}
         required: false
-        default: 'SnowLuma-dev-{sha}-{platform}'
-      platforms:
-        description: 'Platforms (comma-separated, e.g. linux-x64,linux-arm64)'
-        required: false
-        default: 'linux-x64,linux-arm64'
-      platform_map:
-        description: >
-          JSON: tarball_platform -> docker_platform.
-          e.g. {"linux-x64":"linux/amd64","linux-arm64":"linux/arm64"}
-        required: false
-        default: '{"linux-x64":"linux/amd64","linux-arm64":"linux/arm64"}'
-
-      # ── Docker ──
+        default: ''
       docker_image:
         description: 'Docker image name (empty = vars.DOCKER_IMAGE)'
         required: false
@@ -48,20 +35,26 @@ on:
         description: 'Docker image tag'
         required: false
         default: 'dev'
-
-      # ── Behavior ──
+      force:
+        description: 'Sync even if lock file SHA matches'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Check only; skip download and build'
         required: false
         type: boolean
         default: false
 
+permissions:
+  contents: write
+
 jobs:
-  # ──────────────────────────────────
-  # 1. Validate
-  # ──────────────────────────────────
   validate:
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
     outputs:
       repo_owner: ${{ steps.validate.outputs.repo_owner }}
       repo_name: ${{ steps.validate.outputs.repo_name }}
@@ -70,48 +63,36 @@ jobs:
         env:
           REPO: ${{ inputs.repository }}
           TAG: ${{ inputs.docker_image_tag }}
-          PLATFORM_MAP: ${{ inputs.platform_map }}
-          PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-
           if ! [[ "$REPO" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
             echo "Invalid repository: $REPO (expected owner/repo)" >&2; exit 1
           fi
           echo "repo_owner=${REPO%%/*}" >> "$GITHUB_OUTPUT"
           echo "repo_name=${REPO#*/}" >> "$GITHUB_OUTPUT"
-
           if ! [[ "$TAG" =~ ^[a-z0-9._-]+$ ]]; then
             echo "Invalid Docker tag: $TAG (must match [a-z0-9._-]+)" >&2; exit 1
           fi
 
-          echo "$PLATFORM_MAP" | jq empty >/dev/null 2>&1 || {
-            echo "platform_map is not valid JSON" >&2; exit 1
-          }
-
-          IFS=',' read -ra list <<< "$PLATFORMS"
-          for p in "${list[@]}"; do
-            p="$(echo "$p" | xargs)"; [ -z "$p" ] && continue
-            if ! echo "$PLATFORM_MAP" | jq -e --arg p "$p" 'has($p)' >/dev/null 2>&1; then
-              echo "Platform '$p' not in platform_map" >&2; exit 1
-            fi
-          done
-
-  # ──────────────────────────────────
-  # 2. Check upstream
-  # ──────────────────────────────────
   check:
     needs: validate
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
     outputs:
       has_update: ${{ steps.check.outputs.has_update }}
       head_sha: ${{ steps.check.outputs.head_sha }}
       run_id: ${{ steps.check.outputs.run_id }}
       is_dry_run: ${{ steps.check.outputs.is_dry_run }}
     steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_PAT || secrets.UPSTREAM_PAT || secrets.SNOWLUMA_GH_TOKEN || github.token }}
+
       - id: check
         env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.UPSTREAM_PAT || secrets.SNOWLUMA_GH_TOKEN || github.token }}
         run: |
           set -euo pipefail
           is_dry_run="${{ inputs.dry_run == true && 'true' || 'false' }}"
@@ -124,6 +105,21 @@ jobs:
           branch_tip="$(gh api "repos/${repo}/commits/${branch}" --jq .sha)"
           echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
           echo "Upstream ${repo}@${branch} HEAD: ${branch_tip}"
+
+          force="${{ inputs.force == true && '1' || '0' }}"
+          if [ "${force}" = "1" ]; then
+            echo "has_update=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Lock file — skip if same SHA
+          last_sha=""
+          if [ -f .github/snowluma-dev-lock.json ]; then
+            last_sha="$(jq -r '.sha // empty' .github/snowluma-dev-lock.json)"
+          fi
+          if [ "${last_sha}" = "${branch_tip}" ]; then
+            echo "Already synced at ${branch_tip}; no update needed."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
 
           run_json="$(gh run list \
             --repo "${repo}" \
@@ -156,29 +152,30 @@ jobs:
           echo "Tag:        ${{ inputs.docker_image_tag }}"
           echo "Would download artifacts and build Docker image."
 
-  # ──────────────────────────────────
-  # 3. Download artifacts
-  # ──────────────────────────────────
   download:
     needs: check
     if: ${{ needs.check.outputs.has_update == 'true' && needs.check.outputs.is_dry_run != 'true' }}
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
     outputs:
       platforms: ${{ steps.check_platforms.outputs.platforms }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_PAT || secrets.UPSTREAM_PAT || secrets.SNOWLUMA_GH_TOKEN || github.token }}
 
       - name: Download artifacts from upstream
         id: download
         env:
-          GH_TOKEN: ${{ secrets.UPSTREAM_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.UPSTREAM_PAT || secrets.SNOWLUMA_GH_TOKEN || github.token }}
           SNOWLUMA_REPO: ${{ inputs.repository }}
           HEAD_SHA: ${{ needs.check.outputs.head_sha }}
           RUN_ID: ${{ needs.check.outputs.run_id }}
           SOURCE_BRANCH: ${{ inputs.branch }}
           WORKFLOW_NAME: ${{ inputs.workflow_name }}
           ARTIFACT_NAME_TEMPLATE: ${{ inputs.artifact_name_template }}
-          PLATFORMS: ${{ inputs.platforms }}
         run: |
           chmod +x ./scripts/sync-dev-framework.sh
           ./scripts/sync-dev-framework.sh
@@ -187,7 +184,7 @@ jobs:
         id: check_platforms
         run: |
           platforms=""
-          IFS=',' read -ra list <<< "${{ inputs.platforms }}"
+          IFS=',' read -ra list <<< "${{ env.PLATFORMS }}"
           for p in "${list[@]}"; do
             p="$(echo "$p" | xargs)"; [ -z "$p" ] && continue
             [ -f "SnowLuma.Framework.${p}.tar.gz" ] && platforms="${platforms}${platforms:+,}${p}"
@@ -203,21 +200,39 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ──────────────────────────────────
-  # 4. Resolve build matrix
-  # ──────────────────────────────────
+      - name: Commit framework tarballs
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/snowluma-dev-lock.json
+          shopt -s nullglob
+          for file in SnowLuma.Framework*.tar.gz; do
+            git add "${file}"
+          done
+          if git diff --staged --quiet; then
+            echo "Framework tarballs unchanged; skip commit."
+            exit 0
+          fi
+          sha="${{ needs.check.outputs.head_sha }}"
+          git commit -m "chore: update dev framework @ ${sha:0:12}"
+          git push
+
   resolve:
     needs: download
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
       - id: resolve
         env:
-          PLATFORM_MAP: ${{ inputs.platform_map }}
           DOWNLOADED_PLATFORMS: ${{ needs.download.outputs.platforms }}
         run: |
           set -euo pipefail
+          PLATFORM_MAP='${{ env.PLATFORM_MAP }}'
           matrix='{"include":['
           separator=''
           IFS=',' read -ra platforms <<< "$DOWNLOADED_PLATFORMS"
@@ -236,9 +251,6 @@ jobs:
           matrix="${matrix}]}"
           echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
 
-  # ──────────────────────────────────
-  # 5. Build per platform
-  # ──────────────────────────────────
   build:
     needs: resolve
     if: needs.resolve.outputs.matrix != '{"include":[]}'
@@ -246,6 +258,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
 
@@ -306,13 +321,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ──────────────────────────────────
-  # 6. Merge multi-arch manifest
-  # ──────────────────────────────────
   merge:
     needs: build
     if: always()
     runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: docker/setup-buildx-action@v4
 
