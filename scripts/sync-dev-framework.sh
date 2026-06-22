@@ -6,10 +6,11 @@
 #   HEAD_SHA                 - commit SHA (required)
 #   RUN_ID                   - workflow run ID (required)
 #   PLATFORMS                - comma-separated platforms (default: linux-x64,linux-arm64)
-#   ARTIFACT_NAME_TEMPLATE   - template with {sha}, {platform}, etc.
+#   ARTIFACT_NAME_TEMPLATE   - template with {sha}, {platform}, etc. (default: SnowLuma-dev-{sha}-{platform})
 #   SOURCE_BRANCH            - branch for template (default: dev)
 #   WORKFLOW_NAME            - workflow name for template (default: Dev Build)
 #   LITE_TARBALL_PATTERN     - suffix to identify lite tarballs (default: -lite.tar.gz)
+#   LOCK_FILE                - lock file path (default: .github/snowluma-dev-lock.json)
 #
 # Template placeholders:
 #   {sha}, {sha_short}, {branch}, {platform}, {workflow},
@@ -29,6 +30,7 @@ SOURCE_BRANCH="${SOURCE_BRANCH:-dev}"
 WORKFLOW_NAME="${WORKFLOW_NAME:-Dev Build}"
 ARTIFACT_NAME_TEMPLATE="${ARTIFACT_NAME_TEMPLATE:-SnowLuma-dev-{sha}-{platform}}"
 LITE_TARBALL_PATTERN="${LITE_TARBALL_PATTERN:--lite.tar.gz}"
+LOCK_FILE="${LOCK_FILE:-${FRAMEWORK_DIR}/.github/snowluma-dev-lock.json}"
 
 [ -n "${HEAD_SHA}" ] && [ -n "${RUN_ID}" ] || {
   echo "HEAD_SHA and RUN_ID are required." >&2; exit 1
@@ -133,3 +135,40 @@ if [ -f "${x64_output}" ]; then
   cp "${x64_output}" "${default_output}"
   echo "Wrote ${default_output} (linux-x64 alias)"
 fi
+
+# ── Write lock file ──
+synced_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+mkdir -p "$(dirname "${LOCK_FILE}")"
+jq -n \
+  --arg sha "${HEAD_SHA}" \
+  --argjson run_id "${RUN_ID}" \
+  --arg synced_at "${synced_at}" \
+  --arg repository "${SNOWLUMA_REPO}" \
+  --arg branch "${SOURCE_BRANCH}" \
+  --arg workflow "${WORKFLOW_NAME}" \
+  '{
+    sha: $sha,
+    run_id: $run_id,
+    repository: $repository,
+    branch: $branch,
+    workflow: $workflow,
+    synced_at: $synced_at,
+    platforms: {}
+  }' > "${LOCK_FILE}"
+
+for raw_platform in "${PLATFORM_LIST[@]}"; do
+  platform="$(echo "${raw_platform}" | xargs)"
+  [ -n "${platform}" ] || continue
+  tmp="$(mktemp)"
+  jq \
+    --arg platform "${platform}" \
+    --arg sha "${HEAD_SHA}" \
+    --argjson run_id "${RUN_ID}" \
+    --arg synced_at "${synced_at}" \
+    --arg file "SnowLuma.Framework.${platform}.tar.gz" \
+    '.platforms[$platform] = { sha: $sha, run_id: $run_id, synced_at: $synced_at, file: $file }' \
+    "${LOCK_FILE}" > "${tmp}"
+  mv "${tmp}" "${LOCK_FILE}"
+done
+
+echo "Updated ${LOCK_FILE}"
