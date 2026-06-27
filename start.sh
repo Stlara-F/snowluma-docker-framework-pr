@@ -29,8 +29,11 @@ rm -f /run/dbus/pid "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}
 # Start session D-Bus daemon for Electron/Qt desktop integration
 mkdir -p /tmp/dbus-session
 rm -f /tmp/dbus-session/socket 2>/dev/null || true
-export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session/socket"
-dbus-daemon --session --fork --address="${DBUS_SESSION_BUS_ADDRESS}" 2>/dev/null || true
+if dbus-daemon --session --fork --address="unix:path=/tmp/dbus-session/socket"; then
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session/socket"
+else
+  echo "Warning: failed to start session D-Bus daemon - desktop integration may not work." >&2
+fi
 
 mkdir -p \
   /var/run/dbus \
