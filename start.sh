@@ -161,6 +161,7 @@ wait_for_xvfb() {
   return 1
 }
 
+export DBUS_SESSION_BUS_ADDRESS=""
 if DBUS_SESSION_BUS_ADDRESS=$(su -s /bin/bash -c 'dbus-daemon --session --fork --print-address' snowluma 2>/dev/null); then
   export DBUS_SESSION_BUS_ADDRESS
 fi
