@@ -8,7 +8,7 @@ set -euo pipefail
 : "${SNOWLUMA_DATA:=/app/snowluma-data}"
 : "${SNOWLUMA_WEBUI_PORT:=5099}"
 : "${SNOWLUMA_LOG_LEVEL:=info}"
-: "${SNOWLUMA_SCREEN:=1920x1080x16}"
+: "${SNOWLUMA_SCREEN:=1920x1080x24}"
 : "${SNOWLUMA_HOOK_AUTOLOAD:=1}"
 : "${SNOWLUMA_EXTRA_QQ_HOMES:=}"
 : "${SNOWLUMA_QQ_FLAGS:=--disable-gpu --disable-software-rasterizer --disable-gpu-compositing}"
@@ -55,6 +55,7 @@ generate_extra_qq_supervisor_conf() {
   local homes="${SNOWLUMA_EXTRA_QQ_HOMES//,/ }"
   local home
   local index=1
+  local delay
 
   rm -f "${conf}"
 
@@ -79,9 +80,11 @@ generate_extra_qq_supervisor_conf() {
     mkdir -p "${home}"
     chown -R "${SNOWLUMA_UID}:${SNOWLUMA_GID}" "${home}"
 
+    delay=$(( (index - 1) * 10 ))
+
     cat >> "${conf}" <<EOF
 [program:qq-extra-${index}]
-command=qq --no-sandbox %(ENV_SNOWLUMA_QQ_FLAGS)s
+command=/bin/sh -c 'sleep ${delay}; exec qq --no-sandbox %(ENV_SNOWLUMA_QQ_FLAGS)s'
 directory=/app
 user=snowluma
 priority=15
@@ -155,7 +158,7 @@ wait_for_xvfb() {
   return 1
 }
 
-if DBUS_SESSION_BUS_ADDRESS=$(su -s /bin/bash -c 'dbus-daemon --session --print-address' snowluma 2>/dev/null); then
+if DBUS_SESSION_BUS_ADDRESS=$(su -s /bin/bash -c 'dbus-daemon --session --fork --print-address' snowluma 2>/dev/null); then
   export DBUS_SESSION_BUS_ADDRESS
 fi
 Xvfb "${DISPLAY}" -screen 0 "${SNOWLUMA_SCREEN}" &
