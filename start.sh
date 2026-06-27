@@ -8,7 +8,7 @@ set -euo pipefail
 : "${SNOWLUMA_DATA:=/app/snowluma-data}"
 : "${SNOWLUMA_WEBUI_PORT:=5099}"
 : "${SNOWLUMA_LOG_LEVEL:=info}"
-: "${SNOWLUMA_SCREEN:=1920x1080x16}"
+: "${SNOWLUMA_SCREEN:=1920x1080x24}"
 : "${SNOWLUMA_HOOK_AUTOLOAD:=1}"
 : "${SNOWLUMA_EXTRA_QQ_HOMES:=}"
 : "${SNOWLUMA_QQ_FLAGS:=--disable-gpu --disable-software-rasterizer --disable-gpu-compositing}"
@@ -25,6 +25,12 @@ chmod 1777 /tmp || true
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix || true
 rm -f /run/dbus/pid "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}"
+
+# Start session D-Bus daemon for Electron/Qt desktop integration
+mkdir -p /tmp/dbus-session
+rm -f /tmp/dbus-session/socket 2>/dev/null || true
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/dbus-session/socket"
+dbus-daemon --session --fork --address="${DBUS_SESSION_BUS_ADDRESS}" 2>/dev/null || true
 
 mkdir -p \
   /var/run/dbus \
@@ -79,9 +85,11 @@ generate_extra_qq_supervisor_conf() {
     mkdir -p "${home}"
     chown -R "${SNOWLUMA_UID}:${SNOWLUMA_GID}" "${home}"
 
+    local delay=$((index * 10))
+
     cat >> "${conf}" <<EOF
 [program:qq-extra-${index}]
-command=qq --no-sandbox %(ENV_SNOWLUMA_QQ_FLAGS)s
+command=bash -c 'sleep ${delay} && exec qq --no-sandbox %(ENV_SNOWLUMA_QQ_FLAGS)s'
 directory=/app
 user=snowluma
 priority=15
@@ -94,7 +102,7 @@ stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
-environment=HOME="${home}",DISPLAY="%(ENV_DISPLAY)s",XDG_RUNTIME_DIR="%(ENV_XDG_RUNTIME_DIR)s",SNOWLUMA_HOOK_RUNTIME_DIR="%(ENV_SNOWLUMA_HOOK_RUNTIME_DIR)s"
+environment=HOME="${home}",DISPLAY="%(ENV_DISPLAY)s",XDG_RUNTIME_DIR="%(ENV_XDG_RUNTIME_DIR)s",SNOWLUMA_HOOK_RUNTIME_DIR="%(ENV_SNOWLUMA_HOOK_RUNTIME_DIR)s",DBUS_SESSION_BUS_ADDRESS="%(ENV_DBUS_SESSION_BUS_ADDRESS)s"
 
 EOF
 
