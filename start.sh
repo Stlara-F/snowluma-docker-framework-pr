@@ -36,6 +36,22 @@ mkdir -p \
   /app/.local/share \
   /etc/supervisor/conf.d
 
+ensure_machine_id() {
+  local target="/etc/machine-id"
+  local persistent="${SNOWLUMA_DATA}/config/machine-id"
+
+  if [ -f "$persistent" ]; then
+    cp "$persistent" "$target"
+  else
+    dbus-uuidgen --ensure="$target"
+    local tmpf; tmpf="$(mktemp "${persistent}.XXXXXX")"
+    cp "$target" "$tmpf"
+    mv "$tmpf" "$persistent"
+  fi
+}
+
+ensure_machine_id
+
 groupmod -o -g "${SNOWLUMA_GID}" snowluma
 usermod -o -u "${SNOWLUMA_UID}" -g "${SNOWLUMA_GID}" snowluma
 
