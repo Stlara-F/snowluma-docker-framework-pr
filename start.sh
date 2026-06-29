@@ -163,6 +163,7 @@ try {
 }
 
 runtimeConfig.webuiPort = webuiPort;
+runtimeConfig.vnc = { enabled: true, host: "127.0.0.1", port: 5900 };
 fs.writeFileSync(runtimeConfigPath, `${JSON.stringify(runtimeConfig, null, 2)}\n`, 'utf8');
 NODE
 # Node.js block above ran as root, so runtime.json is owned by root.
