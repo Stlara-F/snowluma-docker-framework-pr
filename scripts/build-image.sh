@@ -16,6 +16,7 @@ IMAGE="${IMAGE:-snowluma-docker-framework:latest}"
 PUSH="${PUSH:-0}"
 SNOWLUMA_REPO="${SNOWLUMA_REPO:-SnowLuma/SnowLuma}"
 SNOWLUMA_TAG="${SNOWLUMA_TAG:-}"
+SNOWLUMA_ARTIFACT_SUFFIX="${SNOWLUMA_ARTIFACT_SUFFIX:--vnc}"
 ARTIFACT="${FRAMEWORK_DIR}/SnowLuma.Framework.tar.gz"
 
 if [ "${PUSH}" = "1" ] || [ "${PUSH}" = "true" ]; then
@@ -44,7 +45,7 @@ if [ -n "${SNOWLUMA_TAG}" ]; then
     echo "gh CLI not found. Install from https://cli.github.com/ then re-run." >&2
     exit 1
   fi
-  asset="SnowLuma-${SNOWLUMA_TAG}-${asset_arch}-lite.tar.gz"
+  asset="SnowLuma-${SNOWLUMA_TAG}-${asset_arch}${SNOWLUMA_ARTIFACT_SUFFIX}-lite.tar.gz"
   echo "Fetching ${asset} from ${SNOWLUMA_REPO}@${SNOWLUMA_TAG}"
   gh release download "${SNOWLUMA_TAG}" \
     --repo "${SNOWLUMA_REPO}" \

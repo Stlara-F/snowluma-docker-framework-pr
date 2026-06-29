@@ -18,6 +18,7 @@ PLATFORM="${PLATFORM:-linux/amd64}"
 ARTIFACT="${ARTIFACT:-${FRAMEWORK_DIR}/SnowLuma.Framework.tar.gz}"
 SNOWLUMA_REPO="${SNOWLUMA_REPO:-SnowLuma/SnowLuma}"
 SNOWLUMA_TAG="${SNOWLUMA_TAG:-}"
+SNOWLUMA_ARTIFACT_SUFFIX="${SNOWLUMA_ARTIFACT_SUFFIX:--vnc}"
 
 case "${PLATFORM}" in
   linux/amd64) asset_arch="linux-x64" ;;
@@ -61,7 +62,7 @@ if [ -n "${SNOWLUMA_TAG}" ]; then
     echo "Warning: release '${SNOWLUMA_TAG}' not found in ${SNOWLUMA_REPO}." >&2
     echo "Falling back to checked-in tarballs." >&2
   else
-    asset="SnowLuma-${SNOWLUMA_TAG}-${asset_arch}-lite.tar.gz"
+    asset="SnowLuma-${SNOWLUMA_TAG}-${asset_arch}${SNOWLUMA_ARTIFACT_SUFFIX}-lite.tar.gz"
     echo "Fetching ${asset} from ${SNOWLUMA_REPO}@${SNOWLUMA_TAG}"
     gh release download "${SNOWLUMA_TAG}" \
       --repo "${SNOWLUMA_REPO}" \
