@@ -21,9 +21,9 @@ on:
         required: false
         default: "feat/ci-vnc-build"
       target_tag:
-        description: '上游 artifact 文件名中的标签 (默认 feat/ci-vnc-build，通常无需修改)'
+        description: '上游 artifact 文件名中的标签 (默认 dev，通常无需修改)'
         required: false
-        default: "feat/ci-vnc-build"
+        default: "dev"
 
   repository_dispatch:
     types: [snowluma-dev-updated]
