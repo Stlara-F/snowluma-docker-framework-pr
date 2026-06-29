@@ -78,10 +78,12 @@ find_inner_tarball() {
   # Fallback to regular (no suffix)
   if [ -f "${base_dir}/${lite_fallback}" ]; then printf '%s\n' "${base_dir}/${lite_fallback}"; return 0; fi
   if [ -f "${base_dir}/${full_fallback}" ]; then printf '%s\n' "${base_dir}/${full_fallback}"; return 0; fi
-  found="$(find "${extract_dir}" -type f -name "${lite_fallback}" 2>/dev/null | head -n 1)"
-  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
-  found="$(find "${extract_dir}" -type f -name "${full_fallback}" 2>/dev/null | head -n 1)"
-  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+  if [ -n "${extract_dir}" ]; then
+    found="$(find "${extract_dir}" -type f -name "${lite_fallback}" 2>/dev/null | head -n 1)"
+    if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+    found="$(find "${extract_dir}" -type f -name "${full_fallback}" 2>/dev/null | head -n 1)"
+    if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+  fi
   found="$(find "${base_dir}" -type f -name "${lite_fallback}" | head -n 1)"
   if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
   found="$(find "${base_dir}" -type f -name "${full_fallback}" | head -n 1)"
