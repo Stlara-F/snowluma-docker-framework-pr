@@ -145,6 +145,7 @@ jobs:
           RUN_ID: ${{ needs.check.outputs.run_id }}
           PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
           LOCK_FILE: ${{ needs.check.outputs.lock_file }}
+          ARTIFACT_SUFFIX: '-vnc' 
         run: |
           chmod +x ./scripts/sync-dev-framework.sh
           ./scripts/sync-dev-framework.sh

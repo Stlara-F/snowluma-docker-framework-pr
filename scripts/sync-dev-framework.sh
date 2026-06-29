@@ -21,6 +21,7 @@ FRAMEWORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SOURCE_REPO="${SOURCE_REPO:-Stlara-F/SnowLuma}"
 TARGET_TAG="${TARGET_TAG:-dev}"
+ARTIFACT_SUFFIX="${ARTIFACT_SUFFIX:--vnc}"
 PLATFORMS="${PLATFORMS:-linux-x64,linux-arm64}"
 HEAD_SHA="${HEAD_SHA:-}"
 RUN_ID="${RUN_ID:-}"
@@ -47,49 +48,44 @@ find_inner_tarball() {
   local platform="$2"
   local lite_name full_name found
 
-  lite_name="SnowLuma-${TARGET_TAG}-${platform}-lite.tar.gz"
-  full_name="SnowLuma-${TARGET_TAG}-${platform}.tar.gz"
+  # Prefer suffixed variant (e.g. -vnc), fall back to regular
+  lite_name="SnowLuma-${TARGET_TAG}-${platform}${ARTIFACT_SUFFIX}-lite.tar.gz"
+  full_name="SnowLuma-${TARGET_TAG}-${platform}${ARTIFACT_SUFFIX}.tar.gz"
+  lite_fallback="SnowLuma-${TARGET_TAG}-${platform}-lite.tar.gz"
+  full_fallback="SnowLuma-${TARGET_TAG}-${platform}.tar.gz"
 
-  # 1. Directly in the artifact root
-  if [ -f "${base_dir}/${lite_name}" ]; then
-    printf '%s\n' "${base_dir}/${lite_name}"
-    return 0
-  fi
-  if [ -f "${base_dir}/${full_name}" ]; then
-    printf '%s\n' "${base_dir}/${full_name}"
-    return 0
-  fi
+  # Try suffixed variant first (e.g. -vnc)
+  if [ -f "${base_dir}/${lite_name}" ]; then printf '%s\n' "${base_dir}/${lite_name}"; return 0; fi
+  if [ -f "${base_dir}/${full_name}" ]; then printf '%s\n' "${base_dir}/${full_name}"; return 0; fi
 
-  # 2. If artifact is a zip, extract and look inside
-  local zip_file
-  zip_file="$(find "${base_dir}" -maxdepth 1 -type f -name '*.zip' | head -n 1)"
+  # Try zip
+  local zip_file="$(find "${base_dir}" -maxdepth 1 -type f -name '*.zip' | head -n 1)"
   if [ -n "${zip_file}" ]; then
-    local extract_dir="${base_dir}/extracted"
-    mkdir -p "${extract_dir}"
+    local extract_dir="${base_dir}/extracted"; mkdir -p "${extract_dir}"
     unzip -qo "${zip_file}" -d "${extract_dir}"
-    found="$(find "${extract_dir}" -maxdepth 1 -type f -name "${lite_name}" | head -n 1)"
-    if [ -n "${found}" ]; then
-      printf '%s\n' "${found}"
-      return 0
-    fi
-    found="$(find "${extract_dir}" -maxdepth 1 -type f -name "${full_name}" | head -n 1)"
-    if [ -n "${found}" ]; then
-      printf '%s\n' "${found}"
-      return 0
-    fi
+    found="$(find "${extract_dir}" -type f -name "${lite_name}" | head -n 1)"
+    if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+    found="$(find "${extract_dir}" -type f -name "${full_name}" | head -n 1)"
+    if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
   fi
 
-  # 3. Recursive search (in case of nested directories)
+  # Recursive search suffixed
   found="$(find "${base_dir}" -type f -name "${lite_name}" | head -n 1)"
-  if [ -n "${found}" ]; then
-    printf '%s\n' "${found}"
-    return 0
-  fi
+  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
   found="$(find "${base_dir}" -type f -name "${full_name}" | head -n 1)"
-  if [ -n "${found}" ]; then
-    printf '%s\n' "${found}"
-    return 0
-  fi
+  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+
+  # Fallback to regular (no suffix)
+  if [ -f "${base_dir}/${lite_fallback}" ]; then printf '%s\n' "${base_dir}/${lite_fallback}"; return 0; fi
+  if [ -f "${base_dir}/${full_fallback}" ]; then printf '%s\n' "${base_dir}/${full_fallback}"; return 0; fi
+  found="$(find "${extract_dir}" -type f -name "${lite_fallback}" 2>/dev/null | head -n 1)"
+  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+  found="$(find "${extract_dir}" -type f -name "${full_fallback}" 2>/dev/null | head -n 1)"
+  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+  found="$(find "${base_dir}" -type f -name "${lite_fallback}" | head -n 1)"
+  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
+  found="$(find "${base_dir}" -type f -name "${full_fallback}" | head -n 1)"
+  if [ -n "${found}" ]; then printf '%s\n' "${found}"; return 0; fi
 
   return 1
 }
