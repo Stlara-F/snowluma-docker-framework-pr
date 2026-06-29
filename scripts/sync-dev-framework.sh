@@ -105,7 +105,7 @@ sync_platform() {
   esac
 
   output="$(framework_output_for_platform "${platform}")"
-  artifact_name="SnowLuma-${TARGET_TAG}-${HEAD_SHA}-${platform}"
+  artifact_name="SnowLuma-${TARGET_TAG}-${HEAD_SHA}-${platform}${ARTIFACT_SUFFIX}"
   download_dir="$(mktemp -d)"
 
   echo "Downloading artifact ${artifact_name} from run ${RUN_ID} (${SOURCE_REPO})"
