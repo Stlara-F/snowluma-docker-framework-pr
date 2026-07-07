@@ -1,0 +1,213 @@
+name: sync-snowluma-dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '强制重新下载+构建，忽略上次同步记录'
+        required: false
+        type: boolean
+        default: false
+      platforms:
+        description: '预编译包平台，逗号分隔 (默认 linux-x64,linux-arm64)'
+        required: false
+        default: "linux-x64,linux-arm64"
+      source_repo:
+        description: '上游仓库 (owner/repo)，去哪里下载 Dev_Build 产物'
+        required: false
+        default: "Stlara-F/SnowLuma"
+      source_branch:
+        description: '上游分支，从哪个分支获取 Dev_Build'
+        required: false
+        default: "dev"
+      target_tag:
+        description: '上游 artifact 文件名中的标签 (默认 dev，通常无需修改)'
+        required: false
+        default: "dev"
+
+  repository_dispatch:
+    types: [snowluma-dev-updated]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    outputs:
+      has_update: ${{ steps.compare.outputs.has_update }}
+      head_sha: ${{ steps.compare.outputs.head_sha }}
+      run_id: ${{ steps.compare.outputs.run_id }}
+      source_repo: ${{ steps.config.outputs.source_repo }}
+      source_branch: ${{ steps.config.outputs.source_branch }}
+      target_tag: ${{ steps.config.outputs.target_tag }}
+      lock_file: ${{ steps.compare.outputs.lock_file }}
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v6
+
+      - name: Resolve configuration
+        id: config
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            REPO="${{ inputs.source_repo }}"
+            BRANCH="${{ inputs.source_branch }}"
+            TAG="${{ inputs.target_tag }}"
+          elif [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            REPO="${{ github.event.client_payload.source_repo }}"
+            BRANCH="${{ github.event.client_payload.source_branch }}"
+            TAG="${{ github.event.client_payload.target_tag }}"
+          else
+            echo "Unsupported event" >&2
+            exit 1
+          fi
+          REPO="${REPO:-Stlara-F/SnowLuma}"
+          BRANCH="${BRANCH:-dev}"
+          TAG="${TAG:-dev}"
+          echo "source_repo=${REPO}" >> "$GITHUB_OUTPUT"
+          echo "source_branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "target_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Compare upstream with last sync state
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ steps.config.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ steps.config.outputs.source_branch }}
+        run: |
+          set -euo pipefail
+          LOCK_SUFFIX="$(echo "${SOURCE_REPO}_${SOURCE_BRANCH}" | sha256sum | head -c 8)"
+          LOCK_FILE=".github/snowluma-sync-${LOCK_SUFFIX}.json"
+
+          branch_tip="$(gh api repos/${SOURCE_REPO}/commits/${SOURCE_BRANCH} --jq .sha)"
+          echo "Upstream ${SOURCE_REPO}@${SOURCE_BRANCH} HEAD: ${branch_tip}"
+
+          force="${{ github.event_name == 'workflow_dispatch' && inputs.force == true && '1' || '0' }}"
+          if [ "${force}" = "1" ]; then
+            echo "Force sync enabled"
+            echo "has_update=true" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_sha=""
+          if [ -f "${LOCK_FILE}" ]; then
+            last_sha="$(jq -r '.sha // empty' "${LOCK_FILE}")"
+          fi
+
+          if [ "${last_sha}" = "${branch_tip}" ]; then
+            echo "Already synced at ${branch_tip}; no update needed."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run_json="$(gh run list \
+            --repo "${SOURCE_REPO}" \
+            --workflow "Dev Build" \
+            --branch "${SOURCE_BRANCH}" \
+            --commit "${branch_tip}" \
+            --status success \
+            --limit 1 \
+            --json databaseId 2>/dev/null || true)"
+
+          if [ -z "${run_json}" ] || [ "${run_json}" = "[]" ]; then
+            echo "No successful Dev Build yet for ${branch_tip}; will retry next schedule."
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          run_id="$(echo "${run_json}" | jq -r '.[0].databaseId')"
+          echo "Found Dev Build run: ${run_id}"
+          echo "has_update=true" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${branch_tip}" >> "$GITHUB_OUTPUT"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+          echo "lock_file=${LOCK_FILE}" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: check
+    if: needs.check.outputs.has_update == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+
+      - name: Sync SnowLuma framework tarballs
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.SNOWLUMA_GH_TOKEN || secrets.SNOWLUMA_GITHUB_TOKEN }}
+          SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
+          TARGET_TAG: ${{ needs.check.outputs.target_tag }}
+          HEAD_SHA: ${{ needs.check.outputs.head_sha }}
+          RUN_ID: ${{ needs.check.outputs.run_id }}
+          PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
+          LOCK_FILE: ${{ needs.check.outputs.lock_file }}
+        run: |
+          chmod +x ./scripts/sync-dev-framework.sh
+          ./scripts/sync-dev-framework.sh
+
+      - name: Verify framework tarballs
+        env:
+          PLATFORMS: ${{ inputs.platforms || 'linux-x64,linux-arm64' }}
+        run: |
+          set -euo pipefail
+          verify_platform() {
+            local platform="$1"
+            local native_arch
+            case "${platform}" in
+              linux-x64) native_arch="x64" ;;
+              linux-arm64) native_arch="arm64" ;;
+              *) return 1 ;;
+            esac
+            local file="SnowLuma.Framework.${platform}.tar.gz"
+            test -f "${file}" || { echo "Missing ${file}"; exit 1; }
+            tmp="$(mktemp -d)"
+            tar -xzf "${file}" -C "${tmp}"
+            test -f "${tmp}/index.mjs"
+            test -f "${tmp}/native/snowluma-linux-${native_arch}.node"
+            test -f "${tmp}/native/snowluma-linux-${native_arch}.so"
+            test -f "${tmp}/native/websocket-linux-${native_arch}.node"
+            rm -rf "${tmp}"
+            echo "Verified ${file}"
+          }
+          IFS=',' read -r -a list <<< "${PLATFORMS}"
+          for p in "${list[@]}"; do
+            p="$(echo "${p}" | xargs)"
+            [ -n "${p}" ] && verify_platform "${p}"
+          done
+          test -f SnowLuma.Framework.tar.gz || { echo "Missing SnowLuma.Framework.tar.gz"; exit 1; }
+          echo "All tarballs verified."
+
+      - name: Commit and push updated framework
+        env:
+          SOURCE_REPO: ${{ needs.check.outputs.source_repo }}
+          SOURCE_BRANCH: ${{ needs.check.outputs.source_branch }}
+          HEAD_SHA: ${{ needs.check.outputs.head_sha }}
+          LOCK_FILE: ${{ needs.check.outputs.lock_file }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Clean up stale lock files from previous syncs
+          LOCK_BASENAME="$(basename "${LOCK_FILE}")"
+          for stale in .github/snowluma-sync-*.json; do
+            [ "${stale}" = ".github/${LOCK_BASENAME}" ] && continue
+            git rm --ignore-unmatch "${stale}" 2>/dev/null || rm -f "${stale}"
+          done
+
+          echo "{\"sha\":\"${HEAD_SHA}\"}" > "${LOCK_FILE}"
+          git add "${LOCK_FILE}"
+          shopt -s nullglob
+          for file in SnowLuma.Framework*.tar.gz; do
+            git add "${file}"
+          done
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: sync ${SOURCE_REPO}@${SOURCE_BRANCH} @ ${HEAD_SHA:0:12}"
+          git push
