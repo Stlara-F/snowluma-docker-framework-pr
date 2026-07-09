@@ -299,7 +299,7 @@ networks:
     driver: bridge
 ```
 
-## **bash & cron**
+## 容器自动更新 **bash & cron**
 
 #### 使用方法
  1. 安装依赖：`apt install jq`
@@ -308,22 +308,21 @@ networks:
  4. 测试：`./update-compose.sh --dry-run`
  5. 加入 crontab：`*/45 * * * * /path/to/update-compose.sh`
 #
-```
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-COMPOSE_DIR="/opt/composes"
-SERVICE_NAME="snowluma-dev"
-LOG_FILE="/opt/composes/update.log"
-MAX_RETRIES=10
-BASE_DELAY=5
-HEALTH_TIMEOUT=3000
-HEALTH_INTERVAL=30
-PULL_TIMEOUT=1800
-LOCK_FILE="/run/lock/update-compose.lock"
-CACHE_DIR="/tmp/compose-update-cache"
+COMPOSE_DIR="/opt/composes"                          # compose文件路径
+SERVICE_NAME="snowluma-dev"                          # 更新容器名 （空=全部）
+LOG_FILE="/opt/composes/update.log"                  # 保存日志路径 （空=仅终端）
+MAX_RETRIES=10                                       # Pull 重试次数
+BASE_DELAY=5                                         # 基础延迟（秒），指数增长
+HEALTH_TIMEOUT=3000                                  # 健康检查超时（秒）
+HEALTH_INTERVAL=30                                   # 检查间隔（秒）
+PULL_TIMEOUT=1800                                    # 单次 pull 超时（秒）
+LOCK_FILE="/run/lock/update-compose.lock"            # 并发锁
+CACHE_DIR="/tmp/compose-update-cache"                # 缓存目录
 DRY_RUN=false
 
 if [[ -t 1 ]]; then
