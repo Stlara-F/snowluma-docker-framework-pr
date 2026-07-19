@@ -1,4 +1,6 @@
 # 食用指北
+## 发行版
+推荐使用 Debian 13
 ## Docker环境部署
 [Docker CE](https://mirrors.ustc.edu.cn/help/docker-ce.html)
 ```
