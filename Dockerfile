@@ -4,9 +4,9 @@ ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim
 
 ARG TARGETARCH
-ARG QQ_VERSION=3.2.28-48517
-ARG QQ_CHANNEL=f9cbaab2
-ARG QQ_BASE_URL=https://dldir1v6.qq.com/qqfile/qq/QQNT
+ARG QQ_VERSION=3.2.31-51102
+ARG QQ_CHANNEL=c390e792
+ARG QQ_BASE_URL=https://qqdl.gtimg.cn/qqfile/QQNT/9.9.32/beta
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VNC_PASSWD=vncpasswd \
