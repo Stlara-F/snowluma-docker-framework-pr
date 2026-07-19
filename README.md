@@ -314,7 +314,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 COMPOSE_DIR="/opt/composes"                          # compose文件路径
-SERVICE_NAME="snowluma-dev"                          # 更新容器名 （空=全部）
+SERVICE_NAME=""                                      # 更新容器名 （空=全部）
 LOG_FILE="/opt/composes/update.log"                  # 保存日志路径 （空=仅终端）
 MAX_RETRIES=10                                       # Pull 重试次数
 BASE_DELAY=5                                         # 基础延迟（秒），指数增长
